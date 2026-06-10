@@ -447,14 +447,34 @@ kubeadm join <LOAD_BALANCER>:6443 \
 --certificate-key <CERTIFICATE_KEY>
 ```
 
-### Control Plane Sizing Rule
 
-```text
-1 → 3 → 5 → 7
+## For HA setup
+```bash
+
+sudo kubeadm init \
+--control-plane-endpoint "k8s.example.com:6443"
+
+# Generate certificates
+kubeadm init phase upload-certs --upload-certs
+# Generate join command
+kubeadm token create --print-join-command
+# Add control-plane flag to join command
+--control-plane
+# Add certificate key to join command
+--certificate-key
+# The final join command for control plane
+kubeadm join LB:6443 \
+--token xxx \
+--discovery-token-ca-cert-hash sha256:xxx \
+--control-plane \
+--certificate-key yyy
 ```
 
 Always use an odd number of control plane nodes to maintain etcd quorum.
 
+```text
+1 → 3 → 5 → 7
+```
 ---
 
 ## Secret Encryption at Rest
@@ -482,7 +502,43 @@ resources:
       - identity: {}
 EOF
 ```
+---
 
+### Add encryption provider config to kube-apiserver
+
+```bash
+# Backup the kube-apiserver.yaml manifest
+sudo cp \
+/etc/kubernetes/manifests/kube-apiserver.yaml \
+/etc/kubernetes/manifests/kube-apiserver.yaml.bak
+
+# Add the k8s-config volumeMount to the kube-apiserver manifest
+sudo sed -i '/mountPath: \/etc\/kubernetes\/pki/a\
+    - mountPath: /etc/kubernetes\
+      name: k8s-config\
+      readOnly: true' \
+/etc/kubernetes/manifests/kube-apiserver.yaml
+
+# Add the k8s-config volume to the kube-apiserver manifest
+sudo sed -i '/name: k8s-certs/a\
+  - hostPath:\
+      path: /etc/kubernetes\
+      type: Directory\
+    name: k8s-config' \
+/etc/kubernetes/manifests/kube-apiserver.yaml
+
+# Add API server flag
+sudo sed -i '/kube-apiserver/a\    - --encryption-provider-config=/etc/kubernetes/encryption-config.yaml' \
+/etc/kubernetes/manifests/kube-apiserver.yaml
+
+# Add flag
+grep -q encryption-provider-config \
+/etc/kubernetes/manifests/kube-apiserver.yaml || \
+sudo sed -i '/- kube-apiserver/a\
+    - --encryption-provider-config=/etc/kubernetes/encryption-config.yaml' \
+/etc/kubernetes/manifests/kube-apiserver.yaml
+
+```
 ### Restart kube-apiserver after updating the manifest
 
 The kubelet will automatically restart the static pod when the manifest changes.
