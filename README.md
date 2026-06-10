@@ -193,3 +193,296 @@ YAML files provide several advantages:
 - Industry-standard approach for Kubernetes deployments
 
 For small experiments, imperative commands are sufficient. For real-world Kubernetes environments, YAML files are the preferred approach because they are maintainable, reusable, and version controlled.
+
+
+
+## Kubernetes Cheat Sheet
+
+## Cluster Information
+
+### Show all nodes
+
+```bash
+kubectl get nodes
+```
+
+### Show cluster information
+
+```bash
+kubectl cluster-info
+```
+
+### Show all resources in the current namespace
+
+```bash
+kubectl get all
+```
+
+---
+
+## Namespace Commands
+
+### List all namespaces
+
+```bash
+kubectl get ns
+```
+
+### List pods in all namespaces
+
+```bash
+kubectl get pods -A
+```
+
+### List pods in current namespace
+
+```bash
+kubectl get pods
+```
+
+### List pods in a specific namespace
+
+```bash
+kubectl get pods -n kube-system
+```
+
+---
+
+## Join Worker Nodes
+
+### Generate a join command
+
+```bash
+kubeadm token create --print-join-command
+```
+
+### Join a worker node
+
+```bash
+kubeadm join <CONTROL_PLANE_IP>:6443 \
+--token <TOKEN> \
+--discovery-token-ca-cert-hash sha256:<HASH>
+```
+
+---
+
+## Common Resource Commands
+
+### Get resources
+
+```bash
+kubectl get pods
+kubectl get deployments
+kubectl get replicasets
+kubectl get services
+```
+
+### Resource short names
+
+```bash
+kubectl get po      # Pods
+kubectl get deploy  # Deployments
+kubectl get rs      # ReplicaSets
+kubectl get ns      # Namespaces
+kubectl get svc     # Services
+```
+
+---
+
+## Pod Troubleshooting
+
+### View logs
+
+```bash
+kubectl logs <POD_NAME>
+```
+
+### Describe a resource
+
+```bash
+kubectl describe <RESOURCE_TYPE> <RESOURCE_NAME>
+```
+
+### Execute a command inside a container
+
+```bash
+kubectl exec -it <POD_NAME> -- <COMMAND>
+```
+
+Example:
+
+```bash
+kubectl exec -it nginx-pod -- /bin/bash
+```
+
+---
+
+## Working with Namespaces
+
+### View logs
+
+```bash
+kubectl logs <POD_NAME> -n <NAMESPACE>
+```
+
+### Describe a resource
+
+```bash
+kubectl describe <RESOURCE_TYPE> <RESOURCE_NAME> -n <NAMESPACE>
+```
+
+### Execute commands in a namespace
+
+```bash
+kubectl exec -it <POD_NAME> -n <NAMESPACE> -- <COMMAND>
+```
+
+---
+
+## CRUD Operations
+
+### Create a resource
+
+```bash
+kubectl create <RESOURCE_TYPE> <RESOURCE_NAME> --image=<IMAGE_NAME>:<TAG>
+```
+
+Example:
+
+```bash
+kubectl create deployment nginx --image=nginx:latest
+```
+
+### Create resources from YAML
+
+```bash
+kubectl apply -f deployment.yaml
+kubectl apply -f service.yaml
+kubectl apply -f ingress.yaml
+```
+
+### Read resources
+
+```bash
+kubectl get <RESOURCE_TYPE>
+kubectl get <RESOURCE_TYPE> <RESOURCE_NAME>
+```
+
+### Update a resource
+
+```bash
+kubectl edit <RESOURCE_TYPE> <RESOURCE_NAME>
+```
+
+Example:
+
+```bash
+kubectl edit deployment nginx
+```
+
+### Update using YAML
+
+```bash
+kubectl apply -f deployment.yaml
+```
+
+### Delete a resource
+
+```bash
+kubectl delete <RESOURCE_TYPE> <RESOURCE_NAME>
+```
+
+Example:
+
+```bash
+kubectl delete deployment nginx
+```
+
+---
+
+## Control Plane Recovery
+
+### Recreate all control plane components
+
+```bash
+sudo kubeadm init phase control-plane all
+```
+
+### Recreate only the API Server
+
+```bash
+sudo kubeadm init phase control-plane apiserver
+```
+
+---
+
+## High Availability (HA)
+
+### Initialize using a load balancer
+
+```bash
+sudo kubeadm init \
+--control-plane-endpoint "k8s.example.com:6443"
+```
+
+### Upload certificates
+
+```bash
+kubeadm init phase upload-certs --upload-certs
+```
+
+### Generate a join command
+
+```bash
+kubeadm token create --print-join-command
+```
+
+### Join an additional control plane
+
+```bash
+kubeadm join <LOAD_BALANCER>:6443 \
+--token <TOKEN> \
+--discovery-token-ca-cert-hash sha256:<HASH> \
+--control-plane \
+--certificate-key <CERTIFICATE_KEY>
+```
+
+### Control Plane Sizing Rule
+
+```text
+1 → 3 → 5 → 7
+```
+
+Always use an odd number of control plane nodes to maintain etcd quorum.
+
+---
+
+## Secret Encryption at Rest
+
+### Generate encryption key
+
+```bash
+ENCRYPTION_KEY=$(head -c 32 /dev/urandom | base64)
+```
+
+### Create encryption configuration
+
+```bash
+sudo tee /etc/kubernetes/encryption-config.yaml > /dev/null <<EOF
+apiVersion: apiserver.config.k8s.io/v1
+kind: EncryptionConfiguration
+resources:
+  - resources:
+      - secrets
+    providers:
+      - aescbc:
+          keys:
+            - name: key1
+              secret: ${ENCRYPTION_KEY}
+      - identity: {}
+EOF
+```
+
+### Restart kube-apiserver after updating the manifest
+
+The kubelet will automatically restart the static pod when the manifest changes.
