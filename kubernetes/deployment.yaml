@@ -1,26 +1,47 @@
 apiVersion: apps/v1
+
 kind: Deployment
 
 metadata:
-  name: demo-deployment
-  labels:
-    app: demo
-    version: v1
+  name: mongodb-deployment
+  namespace: development
 
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
-      app: demo
-      version: v1
-    template:
-      metadata:
-        labels:
-          app: demo
-          version: v1
-        spec:
-          containers:
-            - name: demo-container
-              image: demo:v1
-              ports:
-                - containerPort: 8080
+      app: mongodb
+  template:
+    metadata:
+      labels:
+        app: mongodb
+    spec:
+      containers:
+        - name: mongodb-container
+          image: mongo:7
+          ports:
+            - containerPort: 27017
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-secret
+                  key: username
+
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-secret
+                  key: password
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          volumeMounts:
+            - name: mongodb-data
+              mountPath: /data/db
+          imagePullPolicy: Always
