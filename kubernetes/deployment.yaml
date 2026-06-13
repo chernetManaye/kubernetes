@@ -4,7 +4,7 @@ kind: Deployment
 
 metadata:
   name: mongodb-deployment
-  namespace: development
+  namespace: application
 
 spec:
   replicas: 1
@@ -45,3 +45,7 @@ spec:
             - name: mongodb-data
               mountPath: /data/db
           imagePullPolicy: Always
+      volumes:
+        - name: mongodb-data
+          persistentVolumeClaim:
+            claimName: mongodb-pvc

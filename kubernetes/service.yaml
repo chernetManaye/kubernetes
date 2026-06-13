@@ -3,6 +3,7 @@ kind: Service
 
 metadata:
   name: mongodb-service
+  namespace: application
 
 spec:
   selector:

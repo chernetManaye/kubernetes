@@ -80,7 +80,8 @@ kubectl
 # --------------------------------------------------
 
 sudo kubeadm init \
---pod-network-cidr=192.168.0.0/16
+  --pod-network-cidr=192.168.0.0/16 \
+  --apiserver-cert-extra-sans="$(curl -s ifconfig.me)"
 
 # --------------------------------------------------
 # 8. Configure kubectl for current user

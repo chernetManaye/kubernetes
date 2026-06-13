@@ -594,3 +594,226 @@ sudo sed -i '/- kube-apiserver/a\
 ### Restart kube-apiserver after updating the manifest
 
 The kubelet will automatically restart the static pod when the manifest changes.
+
+
+## Kubernetes Contexts
+
+In Kubernetes, you can have multiple **contexts**. A context is a configuration that points to a specific **cluster**, **user**, and optionally a **default namespace**. Contexts make it easy to switch between environments such as **development**, **staging**, and **production**.
+
+### List all contexts
+
+Use the following command to list all available contexts:
+
+```bash
+kubectl config get-contexts
+```
+
+Example output:
+
+```bash
+CURRENT   NAME             CLUSTER          AUTHINFO         NAMESPACE
+          docker-desktop   docker-desktop   docker-desktop
+*         minikube         minikube         minikube         default
+```
+
+The asterisk (`*`) indicates the **currently active context**.
+
+### Check the current context
+
+To display the active context, run:
+
+```bash
+kubectl config current-context
+```
+
+### Switch to a different context
+
+To switch to another context, use:
+
+```bash
+kubectl config use-context <context-name>
+```
+
+For example:
+
+```bash
+kubectl config use-context docker-desktop
+```
+
+After switching, verify the active context by running:
+
+```bash
+kubectl config get-contexts
+```
+
+You should see output similar to:
+
+```bash
+CURRENT   NAME             CLUSTER          AUTHINFO         NAMESPACE
+*         docker-desktop   docker-desktop   docker-desktop
+          minikube         minikube         minikube         default
+```
+
+The `*` has now moved to `docker-desktop`, indicating that it is the active context.
+
+## Accessing the Kubernetes Cluster from Your Local Machine
+
+If you initialized the control plane with:
+
+```bash
+sudo kubeadm init \
+  --pod-network-cidr=192.168.0.0/16 \
+  --apiserver-cert-extra-sans="$(curl -s ifconfig.me)"
+```
+
+the generated API server certificate will include the server's public IP, allowing secure access from your laptop.
+
+### 1. Copy the kubeconfig from the control plane
+
+On the control plane:
+
+```bash
+cp /etc/kubernetes/admin.conf ~/aws-cluster.conf
+sudo chown $(id -u):$(id -g) ~/aws-cluster.conf
+```
+
+Copy it to your local machine:
+
+```bash
+scp ubuntu@<CONTROL_PLANE_PUBLIC_IP>:~/aws-cluster.conf .
+```
+
+### 2. Update the API server address
+
+Open `aws-cluster.conf` and make sure the `server` field points to the control plane's public IP:
+
+```yaml
+clusters:
+- cluster:
+    server: https://<CONTROL_PLANE_PUBLIC_IP>:6443
+```
+
+### 3. Save the kubeconfig
+
+#### Linux / macOS
+
+Move the file to:
+
+```text
+~/.kube/aws-cluster.conf
+```
+
+#### Windows
+
+Move the file to:
+
+```text
+%USERPROFILE%\.kube\aws-cluster.conf
+```
+
+### 4. Back up your existing kubeconfig
+
+#### Linux / macOS
+
+```bash
+cp ~/.kube/config ~/.kube/config.backup
+```
+
+#### Windows PowerShell
+
+```powershell
+Copy-Item "$HOME\.kube\config" "$HOME\.kube\config.backup"
+```
+
+### 5. Merge the kubeconfig files
+
+#### Linux / macOS
+
+```bash
+export KUBECONFIG="$HOME/.kube/config:$HOME/.kube/aws-cluster.conf"
+
+kubectl config view --flatten > "$HOME/.kube/config.merged"
+
+mv "$HOME/.kube/config.merged" "$HOME/.kube/config"
+
+unset KUBECONFIG
+```
+
+#### Windows PowerShell
+
+```powershell
+$env:KUBECONFIG="$HOME\.kube\config;$HOME\.kube\aws-cluster.conf"
+
+kubectl config view --flatten > "$HOME\.kube\config.merged"
+
+Move-Item -Force "$HOME\.kube\config.merged" "$HOME\.kube\config"
+
+Remove-Item Env:\KUBECONFIG
+```
+
+### 6. Rename the imported context
+
+```bash
+kubectl config rename-context kubernetes-admin@kubernetes aws
+```
+
+### 7. Switch to the AWS cluster
+
+```bash
+kubectl config use-context aws
+```
+
+### 8. Verify the connection
+
+```bash
+kubectl get nodes
+```
+
+If everything is configured correctly, you should see the nodes in your remote Kubernetes cluster and be able to manage it directly from your local machine.
+
+
+## Persistent Storage in Kubernetes
+
+By default, a container stores data in its writable layer. If the container is recreated, that data is lost. To persist data across restarts, Kubernetes provides different volume mechanisms.
+
+### emptyDir
+
+An `emptyDir` volume is created when a Pod starts and exists for the lifetime of that Pod. It is suitable for temporary files, caching, or sharing data between containers in the same Pod.
+
+```yaml
+volumes:
+  - name: mongodb-data
+    emptyDir: {}
+```
+
+The volume is mounted into the container using:
+
+```yaml
+volumeMounts:
+  - name: mongodb-data
+    mountPath: /data/db
+```
+
+Any data written to `/data/db` is stored in the `emptyDir` volume instead of the container's writable layer. However, the data is deleted when the Pod is removed.
+
+### PersistentVolume (PV)
+
+A `PersistentVolume` (PV) represents actual storage available to the cluster. It defines where and how data is physically stored, such as a local disk, network storage, or cloud volume.
+
+### PersistentVolumeClaim (PVC)
+
+A `PersistentVolumeClaim` (PVC) is a request for storage made by an application. Instead of referencing the storage directly, workloads use the PVC, which is then bound to a suitable PV.
+
+### StorageClass
+
+A `StorageClass` defines how Kubernetes should dynamically provision persistent storage. When a cluster has a StorageClass configured, creating a PVC is often enough because Kubernetes automatically creates and binds a matching PV.
+
+If no StorageClass exists, a matching PV must be created manually before the PVC can be bound.
+
+### Relationship Between PV, PVC, and StorageClass
+
+- `PersistentVolume (PV)` → The actual storage resource.
+- `PersistentVolumeClaim (PVC)` → A request for storage made by an application.
+- `StorageClass` → A template that tells Kubernetes how to automatically create PVs.
+
+In clusters without a `StorageClass`, developers or administrators typically create both the PV and the PVC manually.
