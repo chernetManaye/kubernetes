@@ -1,0 +1,72 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+
+metadata:
+  name: example-ingress
+  namespace: default
+  # Annotations for the ingress controller
+  # unlike other annotations, these are specific to the nginx ingress controller and can be used to configure SSL redirects,
+  # SSL certificates, Rewrite URLs, configure request timeouts, set maximum request size, Enable rate limiting, and other nginx-specific settings
+  # In nginx context it is more of like editing .conf file directives
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  labels:
+    app: example-ingress
+
+spec:
+  tls:
+    - hosts:
+        - example.com
+      secretName: example-tls
+  # The type of ingress controller to use, because we can have multiple ingress controllers in a cluster
+  # ex: nginx, traefik, HAProxy, etc. In this case we are using nginx ingress controller
+  ingressClassName: nginx
+
+  # Default backend service to handle requests that don't match any of the rules below
+  # if not configured, the default backend service will be used
+  # if the default backend service is not configured, the ingress controller will return a 502 Bad Gateway error or
+  # HTTP 404 Not Found or sometimes 503 Service Unavailable
+  defaultBackend:
+    service:
+      name: default-backend
+      port:
+        number: 80
+
+  #  Ingress rules for example.com and api.example.com
+  #  example.com serves the frontend service, api.example.com serves the backend service
+  #  THIS is what we called a "virtual host", many websites can share same IP and port but different host names
+  rules:
+    - host: example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend-service
+                port:
+                  number: 80
+    - host: api.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Exact
+            backend:
+              service:
+                name: backend-service
+                port:
+                  number: 80
+          - path: /products
+            pathType: Prefix
+            backend:
+              service:
+                name: products-service
+                port:
+                  number: 80
+          - path: /payments
+            pathType: Prefix
+            backend:
+              service:
+                name: payments-service
+                port:
+                  number: 80
