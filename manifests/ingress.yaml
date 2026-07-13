@@ -70,3 +70,59 @@ spec:
                 name: payments-service
                 port:
                   number: 80
+
+
+# apiVersion: networking.k8s.io/v1
+# kind: Ingress
+# metadata:
+#   name: grafana
+#   namespace: monitoring
+# spec:
+#   ingressClassName: nginx
+
+#   rules:
+#     - host: demo.shadoshops.com
+#       http:
+#         paths:
+#           - path: /
+#             pathType: Prefix
+#             backend:
+#               service:
+#                 name: monitoring-grafana
+#                 port:
+#                   number: 80
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+
+metadata:
+  name: app-ingress
+  namespace: default
+  labels:
+    app: app-ingress
+
+spec:
+  ingressClassName: nginx
+
+  rules:
+    - host: monitor.shadoshops.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: grafana
+                port:
+                  number: 80
+    - host: cluster.shadoshops.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: headlamp
+                port:
+                  number: 80

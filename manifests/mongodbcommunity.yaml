@@ -1,0 +1,118 @@
+---
+apiVersion: mongodbcommunity.mongodb.com/v1
+kind: MongoDBCommunity
+metadata:
+  name: example-mongodb
+spec:
+  members: 3
+  type: ReplicaSet
+  version: "6.0.5"
+  security:
+    authentication:
+      modes: ["SCRAM"]
+  users:
+    - name: my-user
+      db: admin
+      passwordSecretRef: # a reference to the secret that will be used to generate the user's password
+        name: my-user-password
+      roles:
+        - name: clusterAdmin
+          db: admin
+        - name: userAdminAnyDatabase
+          db: admin
+      scramCredentialsSecretName: my-scram
+  additionalMongodConfig:
+    storage.wiredTiger.engineConfig.journalCompressor: zlib
+
+
+# the user credentials will be generated from this secret
+# once the credentials are generated, this secret is no longer required
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: my-user-password
+type: Opaque
+stringData:
+  password: <your-password-here>
+
+---
+apiVersion: mongodbcommunity.mongodb.com/v1
+kind: MongoDBCommunity
+metadata:
+  name: my-mongodb-community
+spec:
+  version: "8.2.0"
+  type: ReplicaSet
+  members: 1
+  security:
+    authentication:
+      ignoreUnknownUsers: true
+      modes:
+        - SCRAM
+  agent:
+    logLevel: DEBUG
+
+  statefulSet:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: mongod
+              resources:
+                limits:
+                  cpu: "1"
+                  memory: 2Gi
+                requests:
+                  cpu: "0.2"
+                  memory: 400Mi
+            - name: mongodb-agent
+              resources:
+                limits:
+                  cpu: "1"
+                  memory: 2Gi
+                requests:
+                  cpu: "0.2"
+                  memory: 400Mi
+  users:
+    - name: mdb-admin
+      db: admin
+      passwordSecretRef:
+        name: mdb-admin-user-password
+      scramCredentialsSecretName: mdb-admin-user
+      roles:
+        - name: root
+          db: admin
+
+---
+apiVersion: v1
+kind: Secret
+
+metadata:
+  name: mdb-admin-user-password
+
+type: Opaque
+
+stringData:
+  password: MyStrongPassword
+
+# kubectl get crd mongodbcommunity.mongodbcommunity.mongodb.com -o yaml
+# kubectl explain mongodbcommunity.spec
+
+
+
+kubectl run mongo-client \
+  --rm -it \
+  --image=mongo:8 \
+  -- bash
+
+
+mongosh \
+  --host my-mongodb-community-svc.default.svc.cluster.local \
+  -u mdb-admin \
+  -p 'MyStrongPassword' \
+  --authenticationDatabase admin
+
+
+kubectl get deployment mongodb-kubernetes-operator \
+    -o jsonpath='{.spec.template.spec.containers[0].image}'

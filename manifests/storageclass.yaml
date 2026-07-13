@@ -1,0 +1,38 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ebs-gp3-sc
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: ebs.csi.aws.com
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+parameters:
+  type: gp3
+  csi.storage.k8s.io/fstype: ext4
+  encrypted: "true"
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ebs-claim
+spec:
+  storageClassName: ebs-gp3-sc
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+
+# StorageClass as a template or blueprint for creating storage volumes
+
+# kubectl get sc
+# kubectl describe sc ebs-gp3-sc
+# kubectl get sc ebs-gp3-sc -o yaml
+# kubectl describe deployment ebs-csi-controller -n kube-systme
+# kubectl describe daemonset ebs-csi-node -n kube-system
+# kubectl get csidrivers
+# kubectl get csinodes
+# kubectl describe csidriver ebs.csi.aws.com
+# kubectl logs deployment/ebs-csi-controller -n kube-system

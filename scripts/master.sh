@@ -172,47 +172,279 @@ helm install aws-cloud-controller-manager \
 # Wait for AWS CCM to be ready
 # kubectl rollout status deployment/aws-cloud-controller-manager -n kube-system --timeout=10m
 
-# Install NGINX Ingress Controller
-helm install nginx-ingress oci://ghcr.io/nginx/charts/nginx-ingress --version 2.6.1 \
-  --namespace ingress-nginx --create-namespace \
-  --set controller.service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-type"="nlb" \
-  --set controller.service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-nlb-target-type"="instance" \
-  --set controller.service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-scheme"="internet-facing"
-
 # Add the aws ebs csi driver repository
 helm repo add aws-ebs-csi-driver https://kubernetes-sigs.github.io/aws-ebs-csi-driver
 helm repo update
 
 # Install the aws ebs csi driver
 helm install aws-ebs-csi-driver \
-  aws-ebs-csi-driver/aws-ebs-csi-driver -n kube-system
+  aws-ebs-csi-driver/aws-ebs-csi-driver \
+  --namespace kube-system
+
+mkdir -p /home/ubuntu/manifests
+
+# create a storage class and apply it to the cluster
+cat > /home/ubuntu/manifests/storageclass.yaml <<'EOF'
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ebs-gp3-sc
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: ebs.csi.aws.com
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+parameters:
+  type: gp3
+  csi.storage.k8s.io/fstype: ext4
+  encrypted: "true"
+EOF
+
+kubectl apply -f /home/ubuntu/manifests/storageclass.yaml
+
+# Add Karpenter here
+CLUSTER_ENDPOINT=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+
+helm install karpenter oci://public.ecr.aws/karpenter/karpenter \
+  --version 1.13.0 \
+  --namespace karpenter \
+  --create-namespace \
+  --set replicas=1 \
+  --set controller.env[0].name=AWS_REGION \
+  --set controller.env[0].value=eu-central-1 \
+  --set settings.clusterName=kubernetes \
+  --set settings.clusterEndpoint=$CLUSTER_ENDPOINT \
+  --set settings.eksControlPlane=false \
+  --set settings.interruptionQueue="" \
+  --set serviceAccount.create=true \
+  --set 'nodeSelector.node-role\.kubernetes\.io/control-plane=' \
+  --set tolerations[0].key=node-role.kubernetes.io/control-plane \
+  --set tolerations[0].operator=Exists \
+  --set tolerations[0].effect=NoSchedule \
+  --set controller.resources.requests.cpu=200m \
+  --set controller.resources.requests.memory=200Mi \
+  --set controller.resources.limits.cpu=1 \
+  --set controller.resources.limits.memory=1Gi \
+  --wait
 
 
-# # Install the Kubernetes Dashboard
-# helm repo add kubernetes-dashboard https://kubernetes-retired.github.io/dashboard/
-# helm repo update
-# helm upgrade --install kubernetes-dashboard \
-#   kubernetes-dashboard/kubernetes-dashboard \
-#   --namespace kubernetes-dashboard \
-#   --create-namespace
+# Generate the join command
+export JOIN_COMMAND="$(kubeadm token create --print-join-command)"
+# Prepend sudo and append node name substitution
+export JOIN_COMMAND="sudo ${JOIN_COMMAND} --node-name=\$(hostname -f)"
+
+echo "$JOIN_COMMAND"
+
+cat > /home/ubuntu/manifests/ec2nodeclass.yaml <<'EOF'
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: default
+spec:
+  amiFamily: Custom
+
+  amiSelectorTerms:
+    - id: ami-08ea642491f096f83
+
+  role: worker-role
+
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: kubernetes
+
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: kubernetes
 
 
-# # Install container resource monitoring tools: Metrics Server, for real systems use grafana and prometheus
-# helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
-# helm repo update
-# helm install metrics-server metrics-server/metrics-server \
-#   -n kube-system
+  tags:
+    karpenter.sh/discovery: kubernetes
+    Name: karpenter-node
+
+  metadataOptions:
+    httpEndpoint: enabled
+    httpTokens: required
+    httpPutResponseHopLimit: 4
+
+  blockDeviceMappings:
+    - deviceName: /dev/sda1
+      ebs:
+        volumeSize: 25Gi
+        volumeType: gp3
+        encrypted: true
+
+  userData: |
+    #!/bin/bash
+    exec > >(tee /var/log/master-bootstrap.log | logger -t master-bootstrap) 2>&1
+    set -euxo pipefail
+
+    # Install containerd
+    sudo apt-get update
+    sudo apt-get install -y containerd
+
+    # Configure containerd
+    sudo mkdir -p /etc/containerd
+    containerd config default | sudo tee /etc/containerd/config.toml >/dev/null
+
+    # Enable systemd cgroup
+    sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' \
+    /etc/containerd/config.toml
+
+    # Restart and enable containerd
+    sudo systemctl restart containerd
+    sudo systemctl enable containerd
+
+    # Disable swap
+    sudo swapoff -a
+
+    # Comment out swap entry in fstab
+    sudo sed -i '/ swap / s/^/#/' /etc/fstab
+
+    # Enable IP forwarding
+    sudo sysctl -w net.ipv4.ip_forward=1
+
+    # Persist IP forwarding
+    echo 'net.ipv4.ip_forward = 1' | sudo tee /etc/sysctl.d/k8s.conf
+    sudo sysctl --system
+
+    # Install Prerequisites
+    sudo apt-get update
+    sudo apt-get install -y \
+    apt-transport-https \
+    ca-certificates \
+    curl \
+    gpg
+
+    # Add Kubernetes APT repository
+    curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.34/deb/Release.key | \
+    sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+    echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.34/deb/ /' | \
+    sudo tee /etc/apt/sources.list.d/kubernetes.list
+
+    # Install Kubernetes packages
+    sudo apt-get update
+    sudo apt-get install -y \
+    kubelet \
+    kubeadm
+
+    # Hold Kubernetes packages
+    sudo apt-mark hold \
+    kubelet \
+    kubeadm
+
+    # Add this value KUBELET_EXTRA_ARGS="--cloud-provider=external" to /etc/default/kubelet
+    grep -q '^KUBELET_EXTRA_ARGS=' /etc/default/kubelet 2>/dev/null \
+      && sudo sed -i 's|^KUBELET_EXTRA_ARGS=.*|KUBELET_EXTRA_ARGS="--cloud-provider=external"|' /etc/default/kubelet \
+      || echo 'KUBELET_EXTRA_ARGS="--cloud-provider=external"' | sudo tee -a /etc/default/kubelet >/dev/null
+
+    ${JOIN_COMMAND}
+EOF
 
 
-# # Install cluster level logging tools: Loki, Fluent-Bit, and Grafana
-# helm repo add grafana https://grafana.github.io/helm-charts
-# helm repo update
+envsubst '${JOIN_COMMAND}' \
+  < /home/ubuntu/manifests/ec2nodeclass.yaml \
+  | kubectl apply -f -
 
-# helm install loki grafana/loki -n monitoring --create-namespace
-# helm install fluent-bit grafana/fluent-bit -n monitoring
-# helm install grafana grafana/grafana -n monitoring
+cat > /home/ubuntu/manifests/nodepool.yaml <<'EOF'
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: default
+spec:
+  template:
+    metadata:
+      labels:
+        node-type: karpenter
 
-# # Fluent Bit installation
-# # resource: https://docs.fluentbit.io/manual/installation/downloads/kubernetes
-# helm repo add fluent https://fluent.github.io/helm-charts
-# helm upgrade --install fluent-bit fluent/fluent-bit
+    spec:
+      startupTaints:
+        - key: node.cilium.io/agent-not-ready
+          effect: NoSchedule
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: default
+
+      expireAfter: 720h
+
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values:
+            - amd64
+
+        - key: kubernetes.io/os
+          operator: In
+          values:
+            - linux
+
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values:
+            - on-demand
+
+        - key: node.kubernetes.io/instance-type
+          operator: In
+          values:
+            - t3.small
+            - t3.micro
+            - c7i-flex.large
+            - m7i-flex.large
+
+  limits:
+    cpu: 100
+    memory: 100Gi
+
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 5m
+
+  weight: 10
+EOF
+
+kubectl apply -f /home/ubuntu/manifests/nodepool.yaml
+
+# Install NGINX Ingress Controller
+helm install nginx-ingress oci://ghcr.io/nginx/charts/nginx-ingress --version 2.6.1 \
+  --namespace kube-system \
+  --set controller.service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-type"="nlb" \
+  --set controller.service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-nlb-target-type"="instance" \
+  --set controller.service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-scheme"="internet-facing"
+
+
+# Add the external-dns repository
+helm repo add external-dns https://kubernetes-sigs.github.io/external-dns/
+helm repo update
+
+# Install external-dns
+helm install external-dns external-dns/external-dns \
+  -n kube-system \
+  --set provider.name=aws \
+  --set policy=sync \
+  --set registry=txt \
+  --set txtOwnerId=mycluster \
+  --set domainFilters[0]=shadoshops.com \
+  --set env[0].name=AWS_DEFAULT_REGION \
+  --set env[0].value=eu-central-1
+
+
+# add the snashot controller repository
+helm repo add piraeus https://piraeus.io/helm-charts/
+helm repo update
+
+# install the snapshot controller
+helm install snapshot-controller piraeus/snapshot-controller -n kube-system
+
+# create the volume snapshot class
+cat > /home/ubuntu/manifests/volumesnapshotclass.yaml <<'EOF'
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: ebs-snapshot-class
+driver: ebs.csi.aws.com
+deletionPolicy: Delete
+EOF
+
+# apply the volume snapshot class
+kubectl apply -f /home/ubuntu/manifests/volumesnapshotclass.yaml

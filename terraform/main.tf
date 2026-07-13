@@ -9,6 +9,8 @@ resource "aws_vpc" "kubernetes_cluster" {
 
   tags = {
     "kubernetes.io/cluster/kubernetes" = "owned"
+    # Karpenter
+    "karpenter.sh/discovery" = "kubernetes"
   }
 }
 
@@ -20,6 +22,8 @@ resource "aws_subnet" "kubernetes_cluster" {
 
   tags = {
     "kubernetes.io/cluster/kubernetes" = "owned"
+    # Karpenter
+    "karpenter.sh/discovery" = "kubernetes"
     # public
     # "kubernetes.io/role/elb"           = "1"
     # private
@@ -46,38 +50,54 @@ resource "aws_route_table_association" "kubernetes_cluster_rt_association" {
   route_table_id = aws_route_table.kubernetes_cluster_rt.id
 }
 
-resource "aws_security_group" "ssh_only" {
+resource "aws_security_group" "k8s" {
   name        = "k8s-security-group"
-  description = "Allow SSH and all outbound traffic"
+  description = "Allow SSH and outbound traffic"
   vpc_id      = aws_vpc.kubernetes_cluster.id
-
-  ingress {
-    description = "Allow SSH access only"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    from_port = 0
-    to_port   = 0
-    protocol  = "-1"
-    self      = true
-  }
-
-  egress {
-    description = "Allow all outbound traffic"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1" # all protocols
-    cidr_blocks = ["0.0.0.0/0"]
-  }
 
   tags = {
     Name                               = "k8s-security-group"
     "kubernetes.io/cluster/kubernetes" = "owned"
+    # Karpenter
+    "karpenter.sh/discovery" = "kubernetes"
   }
+}
+
+resource "aws_security_group_rule" "ssh" {
+  type              = "ingress"
+  security_group_id = aws_security_group.k8s.id
+
+  from_port = 22
+  to_port   = 22
+  protocol  = "tcp"
+
+  cidr_blocks = ["0.0.0.0/0"]
+
+  description = "Allow SSH access"
+}
+
+resource "aws_security_group_rule" "internal" {
+  type              = "ingress"
+  security_group_id = aws_security_group.k8s.id
+
+  from_port = 0
+  to_port   = 0
+  protocol  = "-1"
+
+  self = true
+}
+
+resource "aws_security_group_rule" "egress" {
+  type              = "egress"
+  security_group_id = aws_security_group.k8s.id
+
+  from_port = 0
+  to_port   = 0
+  protocol  = "-1"
+
+  cidr_blocks = ["0.0.0.0/0"]
+
+  description = "Allow all outbound traffic"
 }
 
 resource "aws_instance" "control_plane" {
@@ -85,7 +105,7 @@ resource "aws_instance" "control_plane" {
   instance_type               = "t3.small"
   key_name                    = data.aws_key_pair.key_pair.key_name
   iam_instance_profile        = aws_iam_instance_profile.control_plane_profile.name
-  vpc_security_group_ids      = [aws_security_group.ssh_only.id]
+  vpc_security_group_ids      = [aws_security_group.k8s.id]
   subnet_id                   = aws_subnet.kubernetes_cluster.id
   associate_public_ip_address = true
 
@@ -107,34 +127,6 @@ resource "aws_instance" "control_plane" {
     enable_resource_name_dns_a_record = true
   }
 }
-
-resource "aws_instance" "worker_1" {
-  ami                         = data.aws_ami.ubuntu_ami.id
-  instance_type               = "t3.small"
-  key_name                    = data.aws_key_pair.key_pair.key_name
-  iam_instance_profile        = aws_iam_instance_profile.worker_node_profile.name
-  vpc_security_group_ids      = [aws_security_group.ssh_only.id]
-  subnet_id                   = aws_subnet.kubernetes_cluster.id
-  associate_public_ip_address = true
-
-  user_data = file("../scripts/worker.sh")
-
-  tags = {
-    Name                               = "k8s-worker-1"
-    "kubernetes.io/cluster/kubernetes" = "owned"
-  }
-  metadata_options {
-    http_endpoint               = "enabled"
-    http_tokens                 = "required" # Require IMDSv2
-    http_put_response_hop_limit = 4
-  }
-
-  private_dns_name_options {
-    hostname_type                     = "ip-name" # Tells AWS to strictly use the ip-xxx format layout
-    enable_resource_name_dns_a_record = true
-  }
-}
-
 
 # worker node IAM Role
 resource "aws_iam_role" "worker_role" {
@@ -172,7 +164,14 @@ resource "aws_iam_policy" "worker_policy" {
           "ecr:GetRepositoryPolicy",
           "ecr:DescribeRepositories",
           "ecr:ListImages",
-          "ecr:BatchGetImage"
+          "ecr:BatchGetImage",
+          ## Route53
+          "route53:ChangeResourceRecordSets",
+          "route53:ListHostedZones",
+          "route53:ListHostedZonesByName",
+          "route53:ListResourceRecordSets",
+          "route53:GetHostedZone",
+          "route53:GetChange",
         ],
         "Resource" : "*"
       }
@@ -186,11 +185,11 @@ resource "aws_iam_role_policy_attachment" "worker_node_attach" {
   policy_arn = aws_iam_policy.worker_policy.arn
 }
 
-# Create an Instance profile for the worker node
-resource "aws_iam_instance_profile" "worker_node_profile" {
-  name = "worker-node-profile"
-  role = aws_iam_role.worker_role.name
-}
+# # Create an Instance profile for the worker node
+# resource "aws_iam_instance_profile" "worker_node_profile" {
+#   name = "worker-node-profile"
+#   role = aws_iam_role.worker_role.name
+# }
 
 # Control Plane IAM Role
 resource "aws_iam_role" "control_plane_role" {
@@ -276,7 +275,47 @@ resource "aws_iam_policy" "control_plane_policy" {
           "elasticloadbalancing:DeregisterTargets",
           "elasticloadbalancing:SetLoadBalancerPoliciesOfListener",
           "iam:CreateServiceLinkedRole",
-          "kms:DescribeKey"
+          "kms:DescribeKey",
+          ## Route53
+          "route53:ChangeResourceRecordSets",
+          "route53:ListHostedZones",
+          "route53:ListHostedZonesByName",
+          "route53:ListResourceRecordSets",
+          "route53:GetHostedZone",
+          "route53:GetChange",
+          ## karpenter
+          "ec2:CreateFleet",
+          "ec2:CreateLaunchTemplate",
+          "ec2:CreateTags",
+          "iam:CreateInstanceProfile",
+          "iam:AddRoleToInstanceProfile",
+          "iam:RemoveRoleFromInstanceProfile",
+          "iam:DeleteInstanceProfile",
+          "iam:GetInstanceProfile",
+          "ec2:DeleteLaunchTemplate",
+          "ec2:RunInstances",
+          "ec2:TerminateInstances",
+          "ec2:DescribeAvailabilityZones",
+          "ec2:DescribeImages",
+          "ec2:DescribeInstances",
+          "ec2:DescribeInstanceTypeOfferings",
+          "ec2:DescribeInstanceTypes",
+          "ec2:DescribeLaunchTemplates",
+          "ec2:DescribeSecurityGroups",
+          "ec2:DescribeSubnets",
+          "ec2:DescribeInstanceStatus",
+          "iam:ListInstanceProfiles",
+          "ec2:DescribeSpotPriceHistory",
+          "ssm:GetParameter",
+          "pricing:GetProducts",
+          "iam:PassRole",
+          "iam:GetInstanceProfile",
+          "iam:CreateInstanceProfile",
+          "iam:DeleteInstanceProfile",
+          "iam:AddRoleToInstanceProfile",
+          "iam:RemoveRoleFromInstanceProfile",
+          "iam:TagInstanceProfile",
+          "iam:GetRole",
         ],
         "Resource" : [
           "*"
@@ -298,7 +337,7 @@ resource "aws_iam_instance_profile" "control_plane_profile" {
   role = aws_iam_role.control_plane_role.name
 }
 
-
+# ebs volume policies
 resource "aws_iam_role_policy_attachment" "control_plane_ebs_csi" {
   role       = aws_iam_role.control_plane_role.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEBSCSIDriverPolicyV2"

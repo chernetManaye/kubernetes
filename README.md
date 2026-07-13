@@ -1,8 +1,8 @@
 # Setting up kuberenetes cluster in aws 
 
-## 1, Ensure each EC2 instance resolves its own FQDN correctly (hostname -f) using AWS internal DNS, and explicitly pass that FQDN to kubeadm with --node-name=$(hostname -f) during both kubeadm init and kubeadm join. This guarantees that kubelet registers the node with a consistent and resolvable name, avoiding hostname-related issues in the cluster.
+### 1, Ensure each EC2 instance resolves its own FQDN correctly (hostname -f) using AWS internal DNS, and explicitly pass that FQDN to kubeadm with --node-name=$(hostname -f) during both kubeadm init and kubeadm join. This guarantees that kubelet registers the node with a consistent and resolvable name, avoiding hostname-related issues in the cluster.
 
-### Node FQDN and DNS Configuration
+#### Node FQDN and DNS Configuration
 
 Kubernetes relies on each node having a unique and resolvable hostname. In AWS, every EC2 instance should resolve its Fully Qualified Domain Name (FQDN) using:
 
@@ -19,21 +19,21 @@ ip-10-0-0-15
 ```
 To ensure this works, the AWS networking infrastructure must be configured to provide internal DNS resolution.
 
-### VPC
+#### VPC
 Enable both DNS resolution and DNS hostnames:
 
 ```hcl
 enable_dns_support   = true
 enable_dns_hostnames = true
 ```
-### Subnet
+#### Subnet
 Ensure newly launched instances receive DNS A-records:
 
 ```hcl
 enable_resource_name_dns_a_record_on_launch = true
 ```
 
-### EC2 Instance
+#### EC2 Instance
 
 Configure the instance to use the AWS IP-based hostname format and register a DNS A-record:
 
@@ -64,7 +64,7 @@ kubeadm join ... \
 ```
 Using the node's FQDN ensures that kubelet registers each node with a consistent and resolvable name, avoiding hostname-related issues within the cluster.
 
-## 2, Configure EC2 instances to use IMDSv2 by enabling the metadata endpoint and requiring session tokens. In this deployment, the default metadata hop limit was insufficient for Kubernetes components running inside containers to access the Instance Metadata Service. Setting http_put_response_hop_limit = 4 allowed AWS-integrated components (such as the EBS CSI Driver) to retrieve instance metadata successfully. Lower values (1 and 2) did not work in this environment.
+### 2, Configure EC2 instances to use IMDSv2 by enabling the metadata endpoint and requiring session tokens. In this deployment, the default metadata hop limit was insufficient for Kubernetes components running inside containers to access the Instance Metadata Service. Setting http_put_response_hop_limit = 4 allowed AWS-integrated components (such as the EBS CSI Driver) to retrieve instance metadata successfully. Lower values (1 and 2) did not work in this environment.
 
 Terraform configuration:
 
@@ -76,7 +76,7 @@ metadata_options {
 }
 ```
 
-## 3, Tag AWS resources with the cluster identifier. Tag EC2 instances, subnets, security groups, and any other AWS resources that Kubernetes integrations depend on using:
+### 3, Tag AWS resources with the cluster identifier. Tag EC2 instances, subnets, security groups, and any other AWS resources that Kubernetes integrations depend on using:
 
 ```hcl
 kubernetes.io/cluster/<cluster-name> = "owned"
@@ -87,7 +87,7 @@ kubernetes.io/role/internal-elb   = "1"
 ```
 (or shared for resources managed outside the cluster). These tags allow AWS-integrated Kubernetes components to discover and associate the correct infrastructure with the cluster. Public and private subnets should also be tagged with the appropriate ELB role tags (kubernetes.io/role/elb or kubernetes.io/role/internal-elb) so AWS load balancers can be provisioned in the correct subnets.
 
-## 4, Configure IAM Roles and Permissions
+### 4, Configure IAM Roles and Permissions
 
 Each EC2 instance must be associated with an IAM role that grants the permissions required by the AWS components running on that node.
 
@@ -100,11 +100,13 @@ AmazonEBSCSIDriverPolicyV2
 ```
 This policy allows the AWS EBS CSI Driver to create, attach, detach, modify, and delete Amazon EBS volumes on behalf of Kubernetes.
 
+Also the external DNS controller needs route53 permissions to update DNS records. So the IAM role for the external DNS controller should be attached to a policy that includes the `route53` permissions.
+
 Without the appropriate IAM roles, AWS-integrated Kubernetes components will fail to communicate with AWS APIs, resulting in errors when provisioning storage or managing cloud resources.
 
 ## Steps 
 
-1, Provision with Terraform
+#### 1, Provision with Terraform
 
 ```powershell
 cd terraform
@@ -112,12 +114,10 @@ terraform init
 terraform plan
 terraform apply --auto-approve
 ```
-2, SSH into the control plane node
+#### 2, SSH into the control plane node
 
-3, Get the userdata logs saved in /var/log/master-bootstrap.log
-sudo kubeadm join 10.0.0.59:6443 --token ut60zn.lyuh6p8xn6egzomv \
-	--discovery-token-ca-cert-hash sha256:44e9b3ceb956ed3c58c8b8b3fdfe32376dd5f50448df13ad894a272e02ad9368 \
-	--node-name=$(hostname -f)
+#### 3, Get the userdata logs saved in /var/log/master-bootstrap.log
+
 ```bash
 sudo cat /var/log/master-bootstrap.log
 ```
@@ -126,14 +126,13 @@ then get the generated join token and copy it to the clipboard
 kubeadm join 18.185.239.164:6443 --token 774yb5.9phbt6tphz8mjysc \
 	--discovery-token-ca-cert-hash sha256:5bf2e9829bc6267a1db375a2bae36f3d527ab409c536f4acccc12873e4ab5966 
 ```
-and modify it to add the `--node-name` flag and sudo at the start and put it somewhere safe
-
+#### 4, Prepend sudo and append `--node-name=$(hostname -f)` flag and put it somewhere safe. 
 ```bash
 sudo kubeadm join 18.185.239.164:6443 --token 774yb5.9phbt6tphz8mjysc \
 	--discovery-token-ca-cert-hash sha256:5bf2e9829bc6267a1db375a2bae36f3d527ab409c536f4acccc12873e4ab5966 \
 	--node-name=$(hostname -f)
 ```
-2, SSH into the worker node and run the join command
+#### 5, SSH into the worker node and run the join command
 
 ```bash
 sudo kubeadm join 18.185.239.164:6443 --token 774yb5.9phbt6tphz8mjysc \
@@ -171,6 +170,37 @@ ubuntu@ip-10-0-0-59:~$
 ```
 #### eventually pending will become running and notReady becomes Ready, Now you can host any kind of application wheather it is a statefull or stateless application and the cluster can manage it safely and efficiently.
 
+
+### Setting up mongodb cluster 
+
+Mongodb cluster needs a lot of CPU, Memory and Disk resources.
+
+Thinds that I learn 
+
+- The securoty group and its rules must be separated
+- We can use one instance resource type and increse with count
+- We need to have ephemerial storage enough for the cluster 
+- We need to setup terraform disk resize in the root disk
+
+### Steps to setup mongodb cluster
+
+#### 1, Add the mongodb helm repository
+```bash
+helm repo add mongodb https://mongodb.github.io/helm-charts
+helm repo update
+```
+
+#### 2, Install the mongodb community operator
+```bash
+helm install community-operator mongodb/community-operator -n mongodb
+```
+
+#### 3, Inside the cluster applications connect using this url: 
+
+```text
+mongodb://my-user:password@example-mongodb-svc.mongodb.svc.cluster.local:27017/admin?replicaSet=rs0
+```
+*You can expose it using a loadbalancer service which will provision a loadbalancer from aws using aws-cloud-controller-manager*
 
 # Kubernetes
 to deeply understand kuberenetes we should focus on 3 main lessons 
@@ -1439,4 +1469,78 @@ kubectl logs -f my-pod
 
 kubectl logs my-pod -c my-container
 kubectl logs --previous my-pod
+```
+### The complete observability stack
+
+```text
+                 Grafana
+        ┌─────────┼──────────┐
+        │         │          │
+        ▼         ▼          ▼
+   Prometheus    Loki      Tempo
+      │           │          │
+   Metrics      Logs      Traces
+      ▲           ▲          ▲
+      │           │          │
+Node Exporter  Fluent Bit  OpenTelemetry Collector
+kube-state-metrics            ▲
+MongoDB Exporter              │
+                              │
+                     OpenTelemetry SDK
+                              │
+                    Express / React / Node.js
+```
+
+```bash
+
+                    Grafana
+         ┌────────────┼────────────┐
+         ▼            ▼           ▼
+    Prometheus      Loki         Tempo
+         ▲            ▲            ▲
+         │            │             │
+ ServiceMonitor   Fluent Bit   OpenTelemetry Collector
+         ▲            ▲            ▲
+         │            │             │
+      /metrics     stdout      OTLP traces
+         \____________|____________/
+                      │
+                 Your Express App
+                 
+```
+
+
+```bash
+# Add headlamp repository
+helm repo add headlamp https://kubernetes-sigs.github.io/headlamp/
+helm repo update
+
+kubectl create namespace headlamp
+
+helm install headlamp headlamp/headlamp -n headlamp
+```
+
+```bash
+helm repo add argo https://argoproj.github.io/argo-helm
+helm repo update
+
+kubectl create namespace argocd
+
+helm install argocd argo/argo-cd -n argocd
+```
+
+<!--resources: https://github.com/kubernetes-sigs/external-dns/blob/master/docs/tutorials/aws.md-->
+```bash
+helm repo add external-dns https://kubernetes-sigs.github.io/external-dns/
+helm repo update
+
+helm install external-dns external-dns/external-dns \
+  -n kube-system \
+  --set provider.name=aws \
+  --set policy=sync \
+  --set registry=txt \
+  --set txtOwnerId=mycluster \
+  --set domainFilters[0]=shadoshops.com \
+  --set env[0].name=AWS_DEFAULT_REGION \
+  --set env[0].value=eu-central-1
 ```
