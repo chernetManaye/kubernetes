@@ -172,6 +172,20 @@ resource "aws_iam_policy" "worker_policy" {
           "route53:ListResourceRecordSets",
           "route53:GetHostedZone",
           "route53:GetChange",
+          ## velero
+          "ec2:DescribeVolumes",
+          "ec2:DescribeSnapshots",
+          "ec2:CreateTags",
+          "ec2:CreateVolume",
+          "ec2:CreateSnapshot",
+          "ec2:DeleteSnapshot",
+          "s3:GetObject",
+          "s3:DeleteObject",
+          "s3:PutObject",
+          "s3:PutObjectTagging",
+          "s3:AbortMultipartUpload",
+          "s3:ListMultipartUploadParts",
+          "s3:ListBucket",
         ],
         "Resource" : "*"
       }
@@ -316,6 +330,20 @@ resource "aws_iam_policy" "control_plane_policy" {
           "iam:RemoveRoleFromInstanceProfile",
           "iam:TagInstanceProfile",
           "iam:GetRole",
+          ## velero
+          "ec2:DescribeVolumes",
+          "ec2:DescribeSnapshots",
+          "ec2:CreateTags",
+          "ec2:CreateVolume",
+          "ec2:CreateSnapshot",
+          "ec2:DeleteSnapshot",
+          "s3:GetObject",
+          "s3:DeleteObject",
+          "s3:PutObject",
+          "s3:PutObjectTagging",
+          "s3:AbortMultipartUpload",
+          "s3:ListMultipartUploadParts",
+          "s3:ListBucket",
         ],
         "Resource" : [
           "*"
@@ -345,4 +373,40 @@ resource "aws_iam_role_policy_attachment" "control_plane_ebs_csi" {
 resource "aws_iam_role_policy_attachment" "worker_ebs_csi" {
   role       = aws_iam_role.worker_role.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEBSCSIDriverPolicyV2"
+}
+
+resource "aws_s3_bucket" "velero" {
+  bucket = "velero-kubernetes-cluster-backups"
+  force_destroy = true
+}
+
+resource "aws_s3_bucket_versioning" "velero" {
+  bucket = aws_s3_bucket.velero.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "velero" {
+  bucket = aws_s3_bucket.velero.id
+
+  block_public_acls       = true
+  ignore_public_acls      = true
+  block_public_policy     = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "velero" {
+  bucket = aws_s3_bucket.velero.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+output "bucket_name" {
+  value = aws_s3_bucket.velero.bucket
 }

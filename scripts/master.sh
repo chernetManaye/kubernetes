@@ -36,7 +36,9 @@ sudo apt-get install -y \
 apt-transport-https \
 ca-certificates \
 curl \
-gpg
+gpg \
+jq \
+wget
 
 # Create directory for apt keyrings
 sudo mkdir -p /etc/apt/keyrings
