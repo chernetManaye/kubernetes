@@ -31,6 +31,10 @@ sudo chmod 600 /etc/kubernetes/encryption/encryption-config.yaml
 # Create the kubeadm config directory
 sudo mkdir -p /home/ubuntu/kubeadm
 
+# Public IP of the node
+PUBLIC_IP=$(curl -s ifconfig.me)
+PRIVATE_IP=$(hostname -I | awk '{print $1}')
+
 # Create the kubeadm config file
 sudo tee /home/ubuntu/kubeadm/kubeadm-config.yaml > /dev/null <<EOF
 apiVersion: kubeadm.k8s.io/v1beta4
@@ -39,10 +43,17 @@ kind: ClusterConfiguration
 clusterName: kubernetes
 kubernetesVersion: v1.34.0
 
+networking:
+  podSubnet: 192.168.0.0/16
+
 apiServer:
+  certSANs:
+    - ${PUBLIC_IP}    # public IP
+    - ${PRIVATE_IP}   # private IP
+
   extraArgs:
     - name: encryption-provider-config
-      value: /etc/kubernetes/encryption-config.yaml
+      value: /etc/kubernetes/encryption/encryption-config.yaml
     - name: service-account-issuer
       value: https://oidc.example.com
     - name: service-account-issuer
@@ -52,31 +63,18 @@ apiServer:
 
   extraVolumes:
     - name: encryption-config
-      hostPath: /etc/kubernetes/encryption-config.yaml
-      mountPath: /etc/kubernetes/encryption-config.yaml
+      hostPath: /etc/kubernetes/encryption
+      mountPath: /etc/kubernetes/encryption
       readOnly: true
-      pathType: File
-EOF
-sudo tee /home/ubuntu/kubeadm/kubeadm-config.yaml > /dev/null <<EOF
-apiVersion: kubeadm.k8s.io/v1beta4
-kind: ClusterConfiguration
-
-clusterName: kubernetes
-kubernetesVersion: v1.34.0
-
+      pathType: DirectoryOrCreate
 EOF
 
-sudo kubeadm init phase control-plane apiserver \
-  --config /home/ubuntu/kubeadm/kubeadm-config.yaml
 
 # Initialize control plane
 sudo kubeadm init \
-  --pod-network-cidr=192.168.0.0/16 \
+  --config /home/ubuntu/kubeadm/kubeadm-config.yaml \
   --skip-phases=addon/kube-proxy \
-  --node-name=$(hostname -f) \
-  --apiserver-cert-extra-sans="$(curl -s ifconfig.me)"
-
-# make sure on the next commands 
+  --node-name=$(hostname -f) 
 # sudo systemctl enable containerd
 # sudo systemctl start containerd
 # sudo systemctl enable kubelet
@@ -86,6 +84,17 @@ kubectl create secret generic demo-secret \
     --from-literal=username=admin \
     --from-literal=password=supersecret123
 
+kubectl create secret generic demo \
+  --from-literal=password=supersecret
+
+sudo crictl ps | grep etcd
+
+sudo crictl exec -it c356fb874a84a \
+etcdctl \
+--cacert=/etc/kubernetes/pki/etcd/ca.crt \
+--cert=/etc/kubernetes/pki/etcd/server.crt \
+--key=/etc/kubernetes/pki/etcd/server.key \
+get /registry/secrets/default/demo
 
 sudo ETCDCTL_API=3 etcdctl \
   --endpoints=https://127.0.0.1:2379 \
@@ -94,4 +103,15 @@ sudo ETCDCTL_API=3 etcdctl \
   --key=/etc/kubernetes/pki/etcd/server.key \
   endpoint health
     
+```
+
+## Cleanup tools
+
+```bash
+sudo kubeadm reset -f
+sudo rm -rf /etc/kubernetes/manifests
+sudo rm -rf /var/lib/etcd
+sudo rm -rf /etc/cni/net.d
+sudo systemctl restart kubelet
+sudo ss -ltnp | egrep '2379|2380|10250|10257|10259|6443'
 ```

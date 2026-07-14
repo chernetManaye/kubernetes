@@ -1,19 +1,5 @@
 ## Setting up IRSA
 
-### 1, Install eksctl
-
-```bash
-curl -fsSL \
-"https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" \
-| tar xz
-
-sudo mv eksctl /usr/local/bin
-
-eksctl version
-
-apt update
-apt install jq
-```
 ```bash
 /var/run/secrets/kubernetes.io/serviceaccount/token
 ```
@@ -115,8 +101,6 @@ echo "$TOKEN" \
 sudo nano /etc/kubernetes/manifests/kube-apiserver.yaml
 
 ```
-
-
 
 ```bash
 https://oidc.shadoshops.com/.well-known/openid-configuration

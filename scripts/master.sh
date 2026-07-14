@@ -115,28 +115,87 @@ timeout: 10
 debug: false
 EOF
 
+# Create the encryption config directory
+sudo mkdir -p /etc/kubernetes/encryption
+
+# Generate the encryption key
+ENCRYPTION_KEY=$(head -c 32 /dev/urandom | base64)
+
+# Create the encryption config file
+sudo tee /etc/kubernetes/encryption/encryption-config.yaml > /dev/null <<EOF
+apiVersion: apiserver.config.k8s.io/v1
+kind: EncryptionConfiguration
+
+resources:
+- resources:
+  - secrets
+
+  providers:
+  - aescbc:
+      keys:
+      - name: key1
+        secret: ${ENCRYPTION_KEY}
+
+  - identity: {}
+EOF
+
+# Set root read and write permissions
+sudo chmod 600 /etc/kubernetes/encryption/encryption-config.yaml
+
+# Create the kubeadm config directory
+sudo mkdir -p /home/ubuntu/kubeadm
+
+# Public IP of the node
+PUBLIC_IP=$(curl -s ifconfig.me)
+PRIVATE_IP=$(hostname -I | awk '{print $1}')
+
+# Create the kubeadm config file
+sudo tee /home/ubuntu/kubeadm/kubeadm-config.yaml > /dev/null <<EOF
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+
+clusterName: kubernetes
+kubernetesVersion: v1.34.0
+
+networking:
+  podSubnet: 192.168.0.0/16
+
+apiServer:
+  certSANs:
+    - ${PUBLIC_IP}    # public IP
+    - ${PRIVATE_IP}   # private IP
+
+  extraArgs:
+    - name: encryption-provider-config
+      value: /etc/kubernetes/encryption/encryption-config.yaml
+    - name: service-account-issuer
+      value: https://oidc.example.com
+    - name: service-account-issuer
+      value: https://kubernetes.default.svc.cluster.local
+    - name: service-account-jwks-uri
+      value: https://oidc.example.com/openid/v1/jwks
+
+  extraVolumes:
+    - name: encryption-config
+      hostPath: /etc/kubernetes/encryption
+      mountPath: /etc/kubernetes/encryption
+      readOnly: true
+      pathType: DirectoryOrCreate
+EOF
+
+
 # Initialize control plane
 sudo kubeadm init \
-  --pod-network-cidr=192.168.0.0/16 \
+  --config /home/ubuntu/kubeadm/kubeadm-config.yaml \
   --skip-phases=addon/kube-proxy \
-  --node-name=$(hostname -f) \
-  --apiserver-cert-extra-sans="$(curl -s ifconfig.me)"
+  --node-name=$(hostname -f)
 
 export KUBECONFIG=/home/ubuntu/.kube/config
 
 # Configure kubectl for current user
-echo "Finished kubeadm init"
-
 mkdir -p /home/ubuntu/.kube
-echo "Created .kube directory"
-
-cp /etc/kubernetes/admin.conf /home/ubuntu/.kube/config
-echo "Copied kubeconfig"
-
+sudo cp /etc/kubernetes/admin.conf /home/ubuntu/.kube/config
 chown ubuntu:ubuntu /home/ubuntu/.kube/config
-echo "Changed ownership"
-
-echo "About to install Cilium"
 
 # Wait for control plane to be ready
 until kubectl get nodes >/dev/null 2>&1; do
@@ -234,8 +293,6 @@ helm install karpenter oci://public.ecr.aws/karpenter/karpenter \
 export JOIN_COMMAND="$(kubeadm token create --print-join-command)"
 # Prepend sudo and append node name substitution
 export JOIN_COMMAND="sudo ${JOIN_COMMAND} --node-name=\$(hostname -f)"
-
-echo "$JOIN_COMMAND"
 
 cat > /home/ubuntu/manifests/ec2nodeclass.yaml <<'EOF'
 apiVersion: karpenter.k8s.aws/v1
