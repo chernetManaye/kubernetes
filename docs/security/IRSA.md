@@ -186,8 +186,23 @@ helm install amazon-eks-pod-identity-webhook \
   --set config.defaultAwsRegion=eu-central-1
 
 helm show values jkroepke/amazon-eks-pod-identity-webhook
+
+# we also should Install cert manager if we do not have it already
+
+# Add cert-manager repository
+helm repo add jetstack https://charts.jetstack.io
+helm repo update
+
+# Install cert-manager chart
+helm install cert-manager jetstack/cert-manager \
+  --namespace cert-manager \
+  --create-namespace \
+  --version v1.21.0  \
+  --set crds.enabled=true
+  
 ```
 
+the above script will join the master script command soon
 
 ## Demonstration
 
@@ -389,7 +404,7 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: irsa-demo
+                name: nginx-service
                 port:
                   number: 80
 EOF
@@ -397,16 +412,145 @@ EOF
 
 ```bash
 curl http://localhost/.well-known/openid-configuration
-curl http://shadoshops.com/.well-known/openid-configuration
-curl https://shadoshops.com/.well-known/openid-configuration
+curl http://oidc.shadoshops.com/.well-known/openid-configuration
+curl https://oidc.shadoshops.com/.well-known/openid-configuration
 
 curl http://localhost/openid/v1/jwks
-curl http://shadoshops.com/openid/v1/jwks
-curl https://shadoshops.com/openid/v1/jwks
+curl http://oidc.shadoshops.com/openid/v1/jwks
+curl https://oidc.shadoshops.com/openid/v1/jwks
 ```
 
 next
 1, terraform configuration for IAM role trust policy with oidc service account 
+
+```hcl
+resource "aws_iam_policy" "s3_readonly" {
+  name = "irsa-s3-readonly"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:ListAllMyBuckets"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_openid_connect_provider" "kubernetes" {
+  url = "https://oidc.shadoshops.com"
+
+  client_id_list = [
+    "sts.amazonaws.com"
+  ]
+
+  thumbprint_list = []
+}
+
+resource "aws_iam_role" "irsa_demo" {
+  name = "irsa-demo-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+
+        Principal = {
+          Federated = aws_iam_openid_connect_provider.kubernetes.arn
+        }
+
+        Action = "sts:AssumeRoleWithWebIdentity"
+
+        Condition = {
+          StringEquals = {
+            "oidc.shadoshops.com:aud" = "sts.amazonaws.com"
+            "oidc.shadoshops.com:sub" = "system:serviceaccount:irsa-demo:s3-reader"
+          }
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "irsa_demo" {
+  role       = aws_iam_role.irsa_demo.name
+  policy_arn = aws_iam_policy.s3_readonly.arn
+}
+```
+
+```bash
+cat <<EOF > serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: s3-reader
+  namespace: irsa-demo
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::176852750047:role/irsa-demo-role
+EOF
+
+kubectl apply -f serviceaccount.yaml
+```
+```bash
+cat <<EOF > aws-cli.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: aws-cli
+  namespace: irsa-demo
+spec:
+  serviceAccountName: s3-reader
+  containers:
+    - name: aws
+      image: amazon/aws-cli:latest
+      command:
+        - sleep
+        - infinity
+EOF
+
+kubectl apply -f aws-cli.yaml
+```
+
+
+verify 
+
+kubectl describe pod aws-cli
+You should see variables like:
+
+AWS_ROLE_ARN
+AWS_WEB_IDENTITY_TOKEN_FILE
+AWS_REGION
+
+
+```bash
+
+kubectl exec -it aws-cli -- sh
+
+
+aws sts get-caller-identity
+
+aws s3 ls
+
+aws s3api list-buckets
+```
+```
+Best: One IAM role per ServiceAccount (StringEquals on a specific sub).
+Acceptable: One IAM role per namespace (StringLike with system:serviceaccount:<namespace>:*) when multiple workloads legitimately need the same AWS permissions.
+Avoid: system:serviceaccount:*:* unless you intentionally want every ServiceAccount in the cluster to have identical AWS permissions, which is uncommon and significantly broadens access.
+
+```
+questions:
+
+1, what is aud?
+2, what is sub?
+3, can I use my own selfsigned ca and add the thumbprint to the provider and be valid unlike browsers?
+
+
 2, also install the cert-manager since it needs it 
 3, install the webhook 
 

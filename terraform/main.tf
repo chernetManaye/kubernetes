@@ -410,3 +410,20 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "velero" {
 output "bucket_name" {
   value = aws_s3_bucket.velero.bucket
 }
+
+# # Automatically retrieve the TLS certificate data from your OIDC domain
+# data "tls_certificate" "kubernetes" {
+#   url = "https://oidc.shadoshops.com"
+# }
+
+resource "aws_iam_openid_connect_provider" "kubernetes" {
+  url = "https://oidc.shadoshops.com"
+
+  client_id_list = [
+    "sts.amazonaws.com"
+  ]
+
+  thumbprint_list = []
+  # # Dynamically assign the fetched thumbprint
+  # thumbprint_list = [data.tls_certificate.kubernetes.certificates[0].sha1_fingerprint]
+}
