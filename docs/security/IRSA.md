@@ -1,4 +1,7 @@
-## Setting up IRSA
+# IRSA - IAM Roles for Service Accounts
+
+### IMDS(Instance Metadata Service) vs IRSA
+
 ```
 Environment variables
         ↓
@@ -8,6 +11,9 @@ Web Identity Token (IRSA)
         ↓
 EC2 Instance Metadata Service (IMDS)
 ```
+
+## Setting up IRSA
+
 ```bash
 /var/run/secrets/kubernetes.io/serviceaccount/token
 ```
@@ -128,7 +134,7 @@ sudo grep service-account /etc/kubernetes/manifests/kube-apiserver.yaml
   - --service-account-signing-key-file=/etc/kubernetes/pki/sa.key
 ```
 
-what we want is 
+what we want is:
 
 ```
 https://10.0.0.8:6443/.well-known/openid-configuration
@@ -147,14 +153,277 @@ kubernetesVersion: v1.34.0
 
 apiServer:
   extraArgs:
-    encryption-provider-config: /etc/kubernetes/encryption-config.yaml
+    encryption-provider-config: /etc/kubernetes/encryption/encryption-config.yaml
     service-account-issuer: https://oidc.example.com
+    # for backward compatibility with older clients
+    service-account-issuer: https://kubernetes.default.svc.cluster.local
     service-account-jwks-uri: https://oidc.example.com/openid/v1/jwks
 
   extraVolumes:
     - name: encryption-config
-      hostPath: /etc/kubernetes/encryption-config.yaml
-      mountPath: /etc/kubernetes/encryption-config.yaml
+      hostPath: /etc/kubernetes/encryption
+      mountPath: /etc/kubernetes/encryption
       readOnly: true
-      pathType: File
+      pathType: Directory
+```
+## Installation
+
+we have to install the webhook first
+
+we have two options:
+
+1, from github 
+2, from helm chart
+
+```bash
+helm repo add jkroepke https://jkroepke.github.io/helm-charts
+helm repo update
+
+helm install amazon-eks-pod-identity-webhook \
+  jkroepke/amazon-eks-pod-identity-webhook \
+  --namespace irsa-demo \
+  --set config.annotationPrefix=eks.amazonaws.com \
+  --set config.defaultAwsRegion=eu-central-1
+
+helm show values jkroepke/amazon-eks-pod-identity-webhook
+```
+
+
+## Demonstration
+
+```bash
+mkdir ~/irsa-demo
+cd ~/irsa-demo
+```
+
+- create a namespace
+
+```bash
+kubectl create namespace irsa-demo
+```
+
+- create configmaps
+
+1, nginx config 
+
+```bash
+cat <<EOF > nginx-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+  namespace: irsa-demo
+data:
+  nginx.conf: |
+    events {}
+
+    http {
+      server {
+        listen 80;
+
+        location = /.well-known/openid-configuration {
+          default_type application/json;
+          alias /usr/share/nginx/html/.well-known/openid-configuration;
+        }
+
+        location = /openid/v1/jwks {
+          default_type application/json;
+          alias /usr/share/nginx/html/openid/v1/jwks;
+        }
+      }
+    }
+EOF
+
+kubectl apply -f nginx-config.yaml
+
+kubectl get --raw /.well-known/openid-configuration > openid-configuration
+
+kubectl create configmap openid-config \
+    --from-file=openid-configuration \
+    -n irsa-demo
+
+kubectl get --raw /openid/v1/jwks > jwks
+
+kubectl create configmap jwks-config \
+    --from-file=jwks \
+    -n irsa-demo
+
+# for the above two do 3 things make the script one flow, apply it and then remove the json content files after that get the yaml output as a file 
+```
+
+- create deployment
+
+```bash
+cat <<EOF > deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  namespace: irsa-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.29
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+        - name: openid-config
+          mountPath: /usr/share/nginx/html/.well-known/openid-configuration
+          subPath: openid-configuration
+        - name: jwks-config
+          mountPath: /usr/share/nginx/html/openid/v1/jwks
+          subPath: jwks
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: nginx-config
+      - name: openid-config
+        configMap:
+          name: openid-config
+      - name: jwks-config
+        configMap:
+          name: jwks-config
+EOF
+
+kubectl apply -f deployment.yaml
+```
+- create service
+
+```bash
+cat <<EOF > service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-service
+  namespace: irsa-demo
+spec:
+  type: ClusterIP
+  selector:
+    app: nginx
+  ports:
+    - port: 80
+      targetPort: 80
+EOF
+
+kubectl apply -f service.yaml
+```
+- create limit range
+
+```bash
+cat <<EOF > limitrange.yaml
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: irsa-demo-limitrange
+  namespace: irsa-demo
+spec:
+  limits:
+  - type: Container
+    defaultRequest:
+      cpu: 100m
+      memory: 128Mi
+    default:
+      cpu: 500m
+      memory: 512Mi
+EOF
+```
+
+- create http ingress - exposing oidc.shadoshops.com on port 80
+
+```bash
+cat <<EOF > irsa-ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: irsa-ingress
+  namespace: irsa-demo
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: oidc.shadoshops.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: nginx-service
+                port:
+                  number: 80
+EOF
+
+kubectl apply -f irsa-ingress.yaml
+```
+- create https ingress - we need to apply the tls secret
+
+```bash
+cat <<EOF > irsa-ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: irsa-ingress
+  namespace: irsa-demo
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - oidc.shadoshops.com
+      secretName: oidc-tls
+  rules:
+    - host: oidc.shadoshops.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: irsa-demo
+                port:
+                  number: 80
+EOF
+```
+
+```bash
+curl http://localhost/.well-known/openid-configuration
+curl http://shadoshops.com/.well-known/openid-configuration
+curl https://shadoshops.com/.well-known/openid-configuration
+
+curl http://localhost/openid/v1/jwks
+curl http://shadoshops.com/openid/v1/jwks
+curl https://shadoshops.com/openid/v1/jwks
+```
+
+next
+1, terraform configuration for IAM role trust policy with oidc service account 
+2, also install the cert-manager since it needs it 
+3, install the webhook 
+
+
+### Cleanup
+
+```bash
+kubectl delete all --all -n irsa-demo
+
+kubectl delete configmap --all -n irsa-demo
+kubectl delete secret --all -n irsa-demo
+kubectl delete pvc --all -n irsa-demo
+kubectl delete ingress --all -n irsa-demo
+kubectl delete serviceaccount --all -n irsa-demo
+kubectl delete role --all -n irsa-demo
+kubectl delete rolebinding --all -n irsa-demo
+kubectl delete networkpolicy --all -n irsa-demo
+
+kubectl delete namespace irsa-demo
 ```

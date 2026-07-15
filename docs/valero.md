@@ -461,18 +461,3 @@ velero backup logs nginx-backup -n velero
 ```bash
 velero backup delete nginx-backup -n velero
 ```
-
-
-
-
-
-
-
-
-requirments
-
-Set the storage class to default 
-```yaml
-annotations:
-  snapshot.storage.kubernetes.io/is-default-class: "true"
-```
