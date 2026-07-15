@@ -11,12 +11,6 @@ helm install cert-manager jetstack/cert-manager \
   --version v1.21.0  \
   --set crds.enabled=true
 
-time helm install cert-manager jetstack/cert-manager \
-  --namespace cert-manager \
-  --create-namespace \
-  --version v1.21.0 \
-  --set crds.enabled=true
-
 kubectl get pods -n cert-manager -w
 
 # List all Issuers, ClusterIssuers, Certificates, CertificateRequests, Orders, and Challenges in all namespaces
@@ -90,14 +84,14 @@ certificate.yaml
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: api-cert
+  name: oidc-cert
 spec:
-  secretName: api-tls
+  secretName: oidc-tls
   issuerRef:
     kind: ClusterIssuer
-    name: letsencrypt-staging
+    name: letsencrypt-production
   dnsNames:
-    - api.shadoshops.com
+    - oidc.shadoshops.com
 ```
 
 ```

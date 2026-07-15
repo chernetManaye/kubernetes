@@ -1,12 +1,15 @@
+---
+# deployment.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: nginx-deployment
+  namespace: demo
 spec:
   selector:
     matchLabels:
       app: nginx
-  replicas: 2
+  replicas: 1
   template:
     metadata:
       labels:
@@ -14,23 +17,69 @@ spec:
     spec:
       containers:
         - name: nginx
-          image: nginx:1.14.2
+          image: nginx:1.29
           ports:
             - containerPort: 80
-
+          volumeMounts:
+          - name: web-storage
+            mountPath: /usr/share/nginx/html
+      volumes:
+      - name: web-storage
+        persistentVolumeClaim:
+          claimName: nginx-pvc
 ---
+# service.yaml
 apiVersion: v1
 kind: Service
-
 metadata:
   name: nginx-service
-
+  namespace: demo
 spec:
   type: ClusterIP
-
   selector:
     app: nginx
-
   ports:
     - port: 80
       targetPort: 80
+---
+# pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nginx-pvc
+  namespace: demo
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+  storageClassName: ebs-gp3-sc
+---
+# limitrange.yaml
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: defaults
+  namespace: demo
+spec:
+  limits:
+  - type: Container
+    defaultRequest:
+      cpu: 100m
+      memory: 128Mi
+    default:
+      cpu: 500m
+      memory: 512Mi
+---
+# snapshot.yaml
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: nginx-snapshot
+  namespace: demo
+spec:
+  volumeSnapshotClassName: ebs-snapshot-class
+  source:
+    persistentVolumeClaimName: nginx-pvc
+---

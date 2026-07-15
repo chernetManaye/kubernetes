@@ -38,3 +38,11 @@ override.tf.json
 terraform.rc
 
 # End of https://www.toptal.com/developers/gitignore/api/terraform
+
+# Never commit secrets
+secrets/
+
+# or, if you only want to ignore specific files
+secrets/*.yaml
+secrets/*.key
+secrets/*.pem

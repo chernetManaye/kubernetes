@@ -1,8 +1,9 @@
-## Install the Velero CLI on the control plane
+# velero - cluster backuping tool
+
+### Install the Velero CLI on the control plane
 
 <!--resource: https://velero.io/docs-->
 <!--resource: https://velero.io/docs/main/supported-providers-->
-Download the latest release (replace the version if needed):
 
 ```bash
 # Download the latest release (replace the version if needed):
@@ -21,7 +22,7 @@ velero version
 rm -rf velero-v1.16.2-linux-amd64 velero-v1.16.2-linux-amd64.tar.gz
 ```
 
-## Create an s3 bucket
+### Create an s3 bucket
 
 ```hcl
 resource "aws_s3_bucket" "velero" {
@@ -69,30 +70,9 @@ output "bucket_name" {
 
 <!--For a production Velero bucket, these four resources (bucket, versioning, public access block, and server-side encryption) are the standard minimum configuration.-->
 
-## create an IAM role with s3 and snapshots policy
+### create an IAM role with s3 and snapshots policies
 
-```bash
-velero install \
-    --provider aws \
-    --plugins velero/velero-plugin-for-aws:v1.12.2 \
-    --bucket velero-kubernetes-cluster-backups \
-    --no-secret \
-    --backup-location-config region=eu-central-1 \
-    --snapshot-location-config region=eu-central-1
-
-velero uninstall
-```
-
-For CSI snapshots:
-
-You need
-
-CSI driver
-VolumeSnapshotClass
-PVCs using that CSI driver
-Snapshot support enabled
-
-```
+```hcl
 "ec2:DescribeVolumes",
 "ec2:DescribeSnapshots",
 "ec2:CreateTags",
@@ -105,58 +85,394 @@ Snapshot support enabled
 "s3:PutObjectTagging",
 "s3:AbortMultipartUpload",
 "s3:ListMultipartUploadParts",
-"s3:ListBucket"
-```                
-
+"s3:ListBucket",
 ```
-Environment variables
-        ↓
-Shared credentials file (~/.aws/credentials)
-        ↓
-Web Identity Token (IRSA)
-        ↓
-EC2 Instance Metadata Service (IMDS)
+
+
+### Install the velero server to the cluster
+```bash
+velero install \
+    --provider aws \
+    --plugins velero/velero-plugin-for-aws:v1.12.2 \
+    --features=EnableCSI \
+    --bucket velero-kubernetes-cluster-backups \
+    --no-secret \
+    --backup-location-config region=eu-central-1 \
+    --snapshot-location-config region=eu-central-1
+
+# to uninstall
+velero uninstall
 ```
 
 ```bash
+kubectl get pod ebs-csi-controller-767c89688b-d7fs8 -n kube-system \
+  -o jsonpath='{.spec.containers[*].name}'
+```
+
+<!--Take this inmind-->
+
+For **Dynamic Provisioning**: The EBS CSI driver automatically tags dynamically created volumes and snapshots. No extra steps are needed.
+
+For **Existing/Static Snapshots**: If you ever try to restore an EBS snapshot that was not created by this CSI driver instance, it will fail unless you manually add the following AWS tag to that snapshot: ebs.csi.aws.com/cluster = true.
+
+
+For CSI snapshots You need:
+
+- CSI driver with Snapshot support enabled
+- PVCs using that CSI driver
+- Kubernetes snapshot controller and CRDs
+
+
+```bash
 kubectl get crd | grep velero
+kubectl get crd | grep snapshot
+```
 
-velero backup-location get
-velero snapshot-location get
+### Basic commands
 
-velero backup create mongo-backup
+- get velero version
+```bash
+velero version
+velero version --client-only=false
+```
 
-velero backup create mongo-backup \
-    --include-namespaces database
+#### Backup 
+- get backups 
 
-velero restore create \
-    --from-backup mongo-backup
-
-velero backup create wordpress-backup \
-    --default-volumes-to-fs-backup
-    
-velero restore create \
-    --from-backup wordpress-backup
-
-
+```bash
 velero backup get
-velero backup describe mongo-backup --details
-velero backup logs mongo-backup
+```
 
+- describe backup
+
+```bash
+velero backup describe <backup-name>
+# or
+velero backup describe <backup-name> --details
+```
+
+- view logs
+```bash
+velero backup logs <backup-name>
+```
+- create a backup
+
+```bash
+# backup everything
+velero backup create <backup-name>
+# backup specific namespace
+velero backup create <backup-name> \
+    --include-namespaces <namespace>
+# backup multiple namespaces
+velero backup create <backup-name> \
+    --include-namespaces <namespace>,<namespace2>
+# exclude specific namespace
+velero backup create <backup-name> \
+    --exclude-namespaces <namespace>
+# exclude multiple namespaces
+velero backup create <backup-name> \
+    --exclude-namespaces <namespace>,<namespace2>
+```
+
+- Delete a backup
+```bash
+velero backup delete <backup-name>
+# to skip confirmation
+velero backup delete <backup-name> --confirm
+```
+
+#### Restore
+
+- get restores
+```bash
 velero restore get
-velero restore describe <restore-name>
-
-
-velero schedule create daily-backup \
-  --schedule="0 2 * * *"
-
-velero schedule get
-
-velero schedule describe daily-backup
-
-velero schedule delete daily-backup
-
+```
+- Restore from backup
+```bash
 velero restore create \
-  --from-backup production \
-  --existing-resource-policy update
+  --from-backup <backup-name> 
+
+# Give it a custom name   
+velero restore create <restore-name> \
+  --from-backup <backup-name>
+
+# Restore to a specific namespace
+velero restore create <restore-name> \
+  --from-backup <backup-name> \
+  --namespace <namespace>
+```
+- Describe a restore
+```bash
+velero restore describe <restore-name>
+```
+- Restore logs
+```bash
+velero restore logs <restore-name>
+```
+- Delete a restore
+```bash
+velero restore delete <restore-name>
+# or skip confirmation
+velero restore delete <restore-name> --confirm
+```
+
+#### Scheduling
+
+- Create a schedule
+```bash
+velero schedule create <schedule-name> \
+  --schedule "<cron-schedule>" 
+
+# Create a schedule with namespace inclusion
+velero schedule create <schedule-name> \
+  --schedule "<cron-schedule>" \
+  --include-namespaces <namespace>
+```
+- Get scheduled backups
+```bash
+velero schedule get
+```
+- Describe a schedule
+```bash
+velero schedule describe <schedule-name>
+```
+
+- Delete a schedule
+```bash
+velero schedule delete <schedule-name>
+# or skip confirmation
+velero schedule delete <schedule-name> --confirm
+```
+
+#### Locations
+
+- backup location
+```bash
+velero backup-location get
+```
+- Describe a backup location
+```bash
+velero backup-location describe <location-name>
+```
+- Delete a backup location
+```bash
+velero backup-location delete <location-name>
+# or skip confirmation
+velero backup-location delete <location-name> --confirm
+```
+
+- snapshot location
+```bash
+velero snapshot-location get
+```
+- Describe a snapshot location
+```bash
+velero snapshot-location describe <location-name>
+```
+- Delete a snapshot location
+```bash
+velero snapshot-location delete <location-name>
+# or skip confirmation
+velero snapshot-location delete <location-name> --confirm
+```
+
+#### Plugins
+
+- List plugins
+```bash
+velero plugin get
+```
+
+- Add a plugin
+```bash
+velero plugin add <plugin-name>
+# plugin name structure: velero/velero-plugin-for-aws:v1.12.2
+```
+
+#### Repositories
+
+- List repositories
+```bash
+velero repo get
+```
+
+- Describe a repository
+```bash
+velero repo describe <repo-name>
+```
+- Delete a repository
+```bash
+velero repo delete <repo-name>
+# or skip confirmation
+velero repo delete <repo-name> --confirm
+```
+
+#### Debug
+```bash
+velero debug
+```
+
+#### help
+```bash
+# Top level help
+velero help
+# or for a specific command
+velero backup --help
+```
+
+
+### Demonstration
+
+- create a velero-demo folder in home directory
+```bash
+mkdir ~/velero-demo
+cd ~/velero-demo
+```
+
+- create deployment
+
+```bash
+cat <<EOF > deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  namespace: velero-demo
+spec:
+  selector:
+    matchLabels:
+      app: nginx
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.29
+          ports:
+            - containerPort: 80
+          volumeMounts:
+          - name: web-storage
+            mountPath: /usr/share/nginx/html
+      volumes:
+      - name: web-storage
+        persistentVolumeClaim:
+          claimName: nginx-pvc
+EOF
+```
+
+- create service
+
+```bash
+cat <<EOF > service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-service
+  namespace: velero-demo
+spec:
+  type: ClusterIP
+  selector:
+    app: nginx
+  ports:
+    - port: 80
+      targetPort: 80
+EOF
+```
+- create limit range
+
+```bash
+cat <<EOF > limitrange.yaml
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: velero-demo-limitrange
+  namespace: velero-demo
+spec:
+  limits:
+  - type: Container
+    defaultRequest:
+      cpu: 100m
+      memory: 128Mi
+    default:
+      cpu: 500m
+      memory: 512Mi
+EOF
+```
+
+- create pvc
+
+```bash
+cat <<EOF > pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nginx-pvc
+  namespace: velero-demo
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+  storageClassName: ebs-gp3-sc
+EOF
+```
+
+- Create the namespace
+
+```bash
+kubectl create namespace velero-demo
+```
+
+- apply resources
+```bash
+kubectl apply -f deployment.yaml
+kubectl apply -f service.yaml
+kubectl apply -f limitrange.yaml
+kubectl apply -f pvc.yaml
+```
+
+#### use velero to backup
+##### make sure you always create backup resources in velero namespace in which velero is installed
+
+- create a backup
+```bash
+velero backup create nginx-backup --include-namespaces velero-demo
+```
+
+- list backups
+
+```bash
+velero backup get
+```
+```bash
+velero backup describe nginx-backup -n velero
+velero backup describe nginx-backup -n velero --details
+```
+
+```bash
+velero backup logs nginx-backup -n velero
+```
+
+- delete a backup
+```bash
+velero backup delete nginx-backup -n velero
+```
+
+
+
+
+
+
+
+
+requirments
+
+Set the storage class to default 
+```yaml
+annotations:
+  snapshot.storage.kubernetes.io/is-default-class: "true"
 ```

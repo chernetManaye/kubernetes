@@ -55,11 +55,11 @@ apiServer:
     - name: encryption-provider-config
       value: /etc/kubernetes/encryption/encryption-config.yaml
     - name: service-account-issuer
-      value: https://oidc.example.com
+      value: https://oidc.shadoshops.com
     - name: service-account-issuer
       value: https://kubernetes.default.svc.cluster.local
     - name: service-account-jwks-uri
-      value: https://oidc.example.com/openid/v1/jwks
+      value: https://oidc.shadoshops.com/openid/v1/jwks
 
   extraVolumes:
     - name: encryption-config

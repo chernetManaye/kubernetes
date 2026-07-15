@@ -1,5 +1,13 @@
 ## Setting up IRSA
-
+```
+Environment variables
+        ↓
+Shared credentials file (~/.aws/credentials)
+        ↓
+Web Identity Token (IRSA)
+        ↓
+EC2 Instance Metadata Service (IMDS)
+```
 ```bash
 /var/run/secrets/kubernetes.io/serviceaccount/token
 ```

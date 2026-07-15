@@ -103,6 +103,14 @@ echo \
 sudo apt-get update
 sudo apt-get install -y helm
 
+# Install velero cli
+wget https://github.com/vmware-tanzu/velero/releases/download/v1.16.2/velero-v1.16.2-linux-amd64.tar.gz
+
+# Extract, move and clean up:
+tar -xzf velero-v1.16.2-linux-amd64.tar.gz
+sudo mv velero-v1.16.2-linux-amd64/velero /usr/local/bin/
+rm -rf velero-v1.16.2-linux-amd64 velero-v1.16.2-linux-amd64.tar.gz
+
 # Install container runtime interface CLI
 sudo apt update
 sudo apt install -y cri-tools
@@ -169,11 +177,11 @@ apiServer:
     - name: encryption-provider-config
       value: /etc/kubernetes/encryption/encryption-config.yaml
     - name: service-account-issuer
-      value: https://oidc.example.com
+      value: https://oidc.shadoshops.com
     - name: service-account-issuer
       value: https://kubernetes.default.svc.cluster.local
     - name: service-account-jwks-uri
-      value: https://oidc.example.com/openid/v1/jwks
+      value: https://oidc.shadoshops.com/openid/v1/jwks
 
   extraVolumes:
     - name: encryption-config
@@ -238,9 +246,9 @@ helm repo add aws-ebs-csi-driver https://kubernetes-sigs.github.io/aws-ebs-csi-d
 helm repo update
 
 # Install the aws ebs csi driver
-helm install aws-ebs-csi-driver \
-  aws-ebs-csi-driver/aws-ebs-csi-driver \
-  --namespace kube-system
+helm install aws-ebs-csi-driver aws-ebs-csi-driver/aws-ebs-csi-driver \
+  --namespace kube-system \
+  --set sidecars.snapshotter.forceEnable=true
 
 mkdir -p /home/ubuntu/manifests
 
@@ -258,6 +266,7 @@ allowVolumeExpansion: true
 parameters:
   type: gp3
   csi.storage.k8s.io/fstype: ext4
+  # csi.storage.k8s.io/fstype: xfs
   encrypted: "true"
 EOF
 
@@ -301,37 +310,28 @@ metadata:
   name: default
 spec:
   amiFamily: Custom
-
   amiSelectorTerms:
     - id: ami-08ea642491f096f83
-
   role: worker-role
-
   subnetSelectorTerms:
     - tags:
         karpenter.sh/discovery: kubernetes
-
   securityGroupSelectorTerms:
     - tags:
         karpenter.sh/discovery: kubernetes
-
-
   tags:
     karpenter.sh/discovery: kubernetes
     Name: karpenter-node
-
   metadataOptions:
     httpEndpoint: enabled
     httpTokens: required
     httpPutResponseHopLimit: 4
-
   blockDeviceMappings:
     - deviceName: /dev/sda1
       ebs:
         volumeSize: 25Gi
         volumeType: gp3
         encrypted: true
-
   userData: |
     #!/bin/bash
     exec > >(tee /var/log/master-bootstrap.log | logger -t master-bootstrap) 2>&1
@@ -415,7 +415,6 @@ spec:
     metadata:
       labels:
         node-type: karpenter
-
     spec:
       startupTaints:
         - key: node.cilium.io/agent-not-ready
@@ -424,25 +423,20 @@ spec:
         group: karpenter.k8s.aws
         kind: EC2NodeClass
         name: default
-
       expireAfter: 720h
-
       requirements:
         - key: kubernetes.io/arch
           operator: In
           values:
             - amd64
-
         - key: kubernetes.io/os
           operator: In
           values:
             - linux
-
         - key: karpenter.sh/capacity-type
           operator: In
           values:
             - on-demand
-
         - key: node.kubernetes.io/instance-type
           operator: In
           values:
@@ -450,15 +444,12 @@ spec:
             - t3.micro
             - c7i-flex.large
             - m7i-flex.large
-
   limits:
     cpu: 100
     memory: 100Gi
-
   disruption:
     consolidationPolicy: WhenEmptyOrUnderutilized
     consolidateAfter: 5m
-
   weight: 10
 EOF
 
@@ -507,3 +498,13 @@ EOF
 
 # apply the volume snapshot class
 kubectl apply -f /home/ubuntu/manifests/volumesnapshotclass.yaml
+
+# Install velero in the cluster
+velero install \
+    --provider aws \
+    --plugins velero/velero-plugin-for-aws:v1.12.2 \
+    --features=EnableCSI \
+    --bucket velero-kubernetes-cluster-backups \
+    --no-secret \
+    --backup-location-config region=eu-central-1 \
+    --snapshot-location-config region=eu-central-1
