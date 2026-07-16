@@ -5,6 +5,6 @@ remember:
 
 2, learn velero commands and see volume snapshots and resource objects in s3 bucket with in a single namespace backuping and restoring - finished
 
-3, demonstarate oidc provider setup and integrate it with kubernetes
+3, demonstarate oidc provider setup and integrate it with kubernetes - finished
 
-4, add the oidc provider trust policy in aws, install the webhook.
+4, add the oidc provider trust policy in aws, install the webhook and implement IRSA test for aws cli pod. - finished
