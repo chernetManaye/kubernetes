@@ -97,7 +97,7 @@ exit
 
 kubectl exec token-test -- cat /var/run/secrets/kubernetes.io/serviceaccount/token
 
-TOKEN=$(kubectl exec token-test -- cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+TOKEN=$(kubectl exec token- -- cat /var/run/secrets/kubernetes.io/serviceaccount/token)
 
 echo "$TOKEN" | tr '.' '\n'
 
@@ -179,9 +179,11 @@ we have two options:
 helm repo add jkroepke https://jkroepke.github.io/helm-charts
 helm repo update
 
+# It has a Mutating Admission Webhook so it will generate MutatingWebhookConfiguration 
 helm install amazon-eks-pod-identity-webhook \
   jkroepke/amazon-eks-pod-identity-webhook \
   --namespace irsa-demo \
+  --create-namespace \
   --set config.annotationPrefix=eks.amazonaws.com \
   --set config.defaultAwsRegion=eu-central-1
 
@@ -217,11 +219,33 @@ cd ~/irsa-demo
 kubectl create namespace irsa-demo
 ```
 
-- create configmaps
-
-1, nginx config 
+- create limit range
 
 ```bash
+cat <<EOF > limitrange.yaml
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: irsa-demo-limitrange
+  namespace: irsa-demo
+spec:
+  limits:
+  - type: Container
+    defaultRequest:
+      cpu: 100m
+      memory: 128Mi
+    default:
+      cpu: 500m
+      memory: 512Mi
+EOF
+
+kubectl apply -f limitrange.yaml
+```
+
+- create configmaps
+
+```bash
+# 1, nginx config 
 cat <<EOF > nginx-config.yaml
 apiVersion: v1
 kind: ConfigMap
@@ -251,12 +275,14 @@ EOF
 
 kubectl apply -f nginx-config.yaml
 
+# 2, openid configuration
 kubectl get --raw /.well-known/openid-configuration > openid-configuration
 
 kubectl create configmap openid-config \
     --from-file=openid-configuration \
     -n irsa-demo
 
+# 3, jwks configuration
 kubectl get --raw /openid/v1/jwks > jwks
 
 kubectl create configmap jwks-config \
@@ -334,26 +360,6 @@ EOF
 
 kubectl apply -f service.yaml
 ```
-- create limit range
-
-```bash
-cat <<EOF > limitrange.yaml
-apiVersion: v1
-kind: LimitRange
-metadata:
-  name: irsa-demo-limitrange
-  namespace: irsa-demo
-spec:
-  limits:
-  - type: Container
-    defaultRequest:
-      cpu: 100m
-      memory: 128Mi
-    default:
-      cpu: 500m
-      memory: 512Mi
-EOF
-```
 
 - create http ingress - exposing oidc.shadoshops.com on port 80
 
@@ -381,6 +387,15 @@ EOF
 
 kubectl apply -f irsa-ingress.yaml
 ```
+
+After you make sure these two urls are accessible, you can proceed with the https ingress.
+
+```bash
+http://oidc.shadoshops.com/.well-known/openid-configuration
+http://oidc.shadoshops.com/openid/v1/jwks
+```
+to do so you need to follow the cert-manager certificate issuing process for you domain save the secret somewhere safe then grab it and apply it to the ingress.
+
 - create https ingress - we need to apply the tls secret
 
 ```bash
@@ -408,6 +423,13 @@ spec:
                 port:
                   number: 80
 EOF
+
+kubectl apply -f irsa-ingress.yaml
+```
+
+```bash
+https://oidc.shadoshops.com/.well-known/openid-configuration
+https://oidc.shadoshops.com/openid/v1/jwks
 ```
 
 ```bash
@@ -420,10 +442,23 @@ curl http://oidc.shadoshops.com/openid/v1/jwks
 curl https://oidc.shadoshops.com/openid/v1/jwks
 ```
 
-next
-1, terraform configuration for IAM role trust policy with oidc service account 
+Then add this terraform code to your `main.tf` file and change the domain to your oidc domain which you configure in kubeapi server manifest
 
 ```hcl
+data "tls_certificate" "kubernetes" {
+  url = "https://oidc.shadoshops.com"
+}
+
+resource "aws_iam_openid_connect_provider" "kubernetes" {
+  url = "https://oidc.shadoshops.com"
+
+  client_id_list = [
+    "sts.amazonaws.com"
+  ]
+
+  thumbprint_list = [data.tls_certificate.kubernetes.certificates[0].sha1_fingerprint]
+}
+
 resource "aws_iam_policy" "s3_readonly" {
   name = "irsa-s3-readonly"
 
@@ -439,16 +474,6 @@ resource "aws_iam_policy" "s3_readonly" {
       }
     ]
   })
-}
-
-resource "aws_iam_openid_connect_provider" "kubernetes" {
-  url = "https://oidc.shadoshops.com"
-
-  client_id_list = [
-    "sts.amazonaws.com"
-  ]
-
-  thumbprint_list = []
 }
 
 resource "aws_iam_role" "irsa_demo" {
@@ -484,6 +509,11 @@ resource "aws_iam_role_policy_attachment" "irsa_demo" {
 ```
 
 ```bash
+terraform plan
+terraform apply -auto-approve
+```
+
+```bash
 cat <<EOF > serviceaccount.yaml
 apiVersion: v1
 kind: ServiceAccount
@@ -495,8 +525,7 @@ metadata:
 EOF
 
 kubectl apply -f serviceaccount.yaml
-```
-```bash
+
 cat <<EOF > aws-cli.yaml
 apiVersion: v1
 kind: Pod
@@ -516,44 +545,101 @@ EOF
 kubectl apply -f aws-cli.yaml
 ```
 
-
 verify 
-
-kubectl describe pod aws-cli
+```bash
+kubectl describe pod aws-cli -n irsa-demo
+```
 You should see variables like:
 
-AWS_ROLE_ARN
-AWS_WEB_IDENTITY_TOKEN_FILE
-AWS_REGION
+```yaml
+AWS_STS_REGIONAL_ENDPOINTS:   regional
+AWS_DEFAULT_REGION:           eu-central-1
+AWS_REGION:                   eu-central-1
+AWS_ROLE_ARN:                 arn:aws:iam::176852750047:role/irsa-demo-role
+AWS_WEB_IDENTITY_TOKEN_FILE:  /var/run/secrets/eks.amazonaws.com/serviceaccount/token
+```
+
+```bash
+kubectl exec -it aws-cli -n irsa-demo -- sh
+aws sts get-caller-identity
+```
+output
+```json
+{
+    "UserId": "AROASSLJ6Z3PQN3LFFW2F:botocore-session-1784186114",
+    "Account": "176852750047",
+    "Arn": "arn:aws:sts::176852750047:assumed-role/irsa-demo-role/botocore-session-1784186114"
+}
+```
+
+```bash
+aws s3 ls
+```
+
+output
+```
+2026-04-29 22:19:50 shadoshops-dev-ingestion-bucket
+2026-04-29 17:50:47 shadoshops-dev-processed-bucket
+2026-04-10 10:32:42 shadoshops-production-ingestion-bucket
+2026-04-11 09:10:14 shadoshops-production-processed-bucket
+2026-07-16 06:43:09 velero-kubernetes-cluster-backups
+```
+
+### Best Practices
+
+- Best: One IAM role per ServiceAccount (StringEquals on a specific sub).
+- Acceptable: One IAM role per namespace (StringLike with system:serviceaccount:<namespace>:*) when multiple workloads legitimately need the same AWS permissions.
+- Avoid: "system:serviceaccount:\*:\*" unless you intentionally want every ServiceAccount in the cluster to have identical AWS permissions, which is uncommon and significantly broadens access.
 
 
 ```bash
+TOKEN=$(kubectl exec aws-cli -n irsa-demo -- cat /var/run/secrets/kubernetes.io/serviceaccount/token)
 
-kubectl exec -it aws-cli -- sh
+echo "$TOKEN" | tr '.' '\n'
 
+# Directory
+echo "$TOKEN" \
+| cut -d '.' -f1 \
+| tr '_-' '/+' \
+| base64 -d | jq
 
-aws sts get-caller-identity
+HEADER=$(echo "$TOKEN" | cut -d '.' -f1) \
+printf '%s' "$HEADER" \
+| tr '_-' '/+' \
+| awk '{ l=length($0)%4; if(l==2)$0=$0"=="; else if(l==3)$0=$0"="; print }' \
+| base64 -d | jq
 
-aws s3 ls
+# Decoded payload
+echo "$TOKEN" \
+| cut -d '.' -f2 \
+| tr '_-' '/+' \
+| base64 -d \
+| jq
 
-aws s3api list-buckets
+PAYLOAD=$(echo "$TOKEN" | cut -d '.' -f2) \
+printf '%s' "$PAYLOAD" \
+| tr '_-' '/+' \
+| awk '{ l=length($0)%4; if(l==2)$0=$0"=="; else if(l==3)$0=$0"="; print }' \
+| base64 -d | jq
+
+echo "$TOKEN" \
+| cut -d '.' -f3 \
+| tr '_-' '/+' \
+| base64 -d > signature.bin
+
+# usable functon
+jwt_decode() {
+    local part=$1
+
+    printf '%s' "$part" \
+    | tr '_-' '/+' \
+    | awk '{ l=length($0)%4;
+        if(l==2)$0=$0"==";
+        else if(l==3)$0=$0"=";
+        print }' \
+    | base64 -d
+}
 ```
-```
-Best: One IAM role per ServiceAccount (StringEquals on a specific sub).
-Acceptable: One IAM role per namespace (StringLike with system:serviceaccount:<namespace>:*) when multiple workloads legitimately need the same AWS permissions.
-Avoid: system:serviceaccount:*:* unless you intentionally want every ServiceAccount in the cluster to have identical AWS permissions, which is uncommon and significantly broadens access.
-
-```
-questions:
-
-1, what is aud?
-2, what is sub?
-3, can I use my own selfsigned ca and add the thumbprint to the provider and be valid unlike browsers?
-
-
-2, also install the cert-manager since it needs it 
-3, install the webhook 
-
 
 ### Cleanup
 

@@ -510,3 +510,25 @@ velero install \
     --no-secret \
     --backup-location-config region=eu-central-1 \
     --snapshot-location-config region=eu-central-1
+
+# Add cert-manager repository
+helm repo add jetstack https://charts.jetstack.io
+helm repo update
+
+# Install cert-manager chart
+helm install cert-manager jetstack/cert-manager \
+  --namespace cert-manager \
+  --create-namespace \
+  --version v1.21.0  \
+  --set crds.enabled=true
+
+# Add the mutating webhook Helm repository
+helm repo add jkroepke https://jkroepke.github.io/helm-charts
+helm repo update
+
+# Install the mutating webhook
+helm install amazon-eks-pod-identity-webhook \
+  jkroepke/amazon-eks-pod-identity-webhook \
+  --namespace irsa-demo \
+  --set config.annotationPrefix=eks.amazonaws.com \
+  --set config.defaultAwsRegion=eu-central-1

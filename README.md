@@ -1511,16 +1511,6 @@ MongoDB Exporter              │
 
 
 ```bash
-# Add headlamp repository
-helm repo add headlamp https://kubernetes-sigs.github.io/headlamp/
-helm repo update
-
-kubectl create namespace headlamp
-
-helm install headlamp headlamp/headlamp -n headlamp
-```
-
-```bash
 helm repo add argo https://argoproj.github.io/argo-helm
 helm repo update
 
@@ -1539,7 +1529,7 @@ helm install external-dns external-dns/external-dns \
   --set provider.name=aws \
   --set policy=sync \
   --set registry=txt \
-  --set txtOwnerId=mycluster \
+  --set txtOwnerId=kubernetes \
   --set domainFilters[0]=shadoshops.com \
   --set env[0].name=AWS_DEFAULT_REGION \
   --set env[0].value=eu-central-1

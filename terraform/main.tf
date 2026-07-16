@@ -411,7 +411,6 @@ output "bucket_name" {
   value = aws_s3_bucket.velero.bucket
 }
 
-# # Automatically retrieve the TLS certificate data from your OIDC domain
 # data "tls_certificate" "kubernetes" {
 #   url = "https://oidc.shadoshops.com"
 # }
@@ -424,6 +423,54 @@ resource "aws_iam_openid_connect_provider" "kubernetes" {
   ]
 
   thumbprint_list = []
-  # # Dynamically assign the fetched thumbprint
   # thumbprint_list = [data.tls_certificate.kubernetes.certificates[0].sha1_fingerprint]
+}
+
+
+resource "aws_iam_policy" "s3_readonly" {
+  name = "irsa-s3-readonly"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:ListAllMyBuckets"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role" "irsa_demo" {
+  name = "irsa-demo-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+
+        Principal = {
+          Federated = aws_iam_openid_connect_provider.kubernetes.arn
+        }
+
+        Action = "sts:AssumeRoleWithWebIdentity"
+
+        Condition = {
+          StringEquals = {
+            "oidc.shadoshops.com:aud" = "sts.amazonaws.com"
+            "oidc.shadoshops.com:sub" = "system:serviceaccount:irsa-demo:s3-reader"
+          }
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "irsa_demo" {
+  role       = aws_iam_role.irsa_demo.name
+  policy_arn = aws_iam_policy.s3_readonly.arn
 }
