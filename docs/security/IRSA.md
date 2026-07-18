@@ -657,3 +657,8 @@ kubectl delete networkpolicy --all -n irsa-demo
 
 kubectl delete namespace irsa-demo
 ```
+
+Plan 
+
+1, create a separate terraform code space to provision the oidc only
+2, then reference the arn in the main.tf file for the irsa role as data source

@@ -1426,34 +1426,6 @@ helm install community-operator mongodb/community-operator --namespace mongodb [
 
 kubectl apply -f https://raw.githubusercontent.com/mongodb/mongodb-kubernetes-operator/master/config/samples/mongodb.com_v1_mongodbcommunity_cr.yaml [--namespace mongodb]
 ```
-### Prometheus helm chart for container resource monitoring
-
-``` bash
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-helm repo update
-# Install monitoring
-helm install monitoring prometheus-community/kube-prometheus-stack \
-  --namespace monitoring \
-  --create-namespace
-### Upgrade monitoring
-helm upgrade monitoring prometheus-community/kube-prometheus-stack \
---namespace monitoring
-### Uninstall monitoring
-helm uninstall monitoring -n monitoring
-```
-### Grafana helm chart for cluster level logging
-
-``` bash
-helm repo add grafana https://grafana.github.io/helm-charts
-helm repo update
-
-helm install loki grafana/loki \
-  --namespace monitoring \
-  --create-namespace
-
-helm install fluent-bit grafana/fluent-bit \
-  --namespace monitoring
-```
 
 ### logging in kubernetes
 
@@ -1533,4 +1505,43 @@ helm install external-dns external-dns/external-dns \
   --set domainFilters[0]=shadoshops.com \
   --set env[0].name=AWS_DEFAULT_REGION \
   --set env[0].value=eu-central-1
+```
+
+# Taints, Tolerations
+
+```bash
+kubectl taint nodes master-node-1 node-role.kubernetes.io/control-plane:NoSchedule
+```
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cluster-monitoring-agent
+spec:
+  containers:
+  - name: agent
+    image: monitoring-agent:v1
+  tolerations:
+  - key: "node-role.kubernetes.io/control-plane"
+    operator: "Exists"
+    effect: "NoSchedule"
+
+```
+```bash
+kubectl taint nodes gpu-node-1 hardware=gpu:NoSchedule
+```
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ml-training-job
+spec:
+  containers:
+  - name: trainer
+    image: tensorflow-model:latest
+  tolerations:
+  - key: "hardware"
+    operator: "Equal"
+    value: "gpu"
+    effect: "NoSchedule"
 ```

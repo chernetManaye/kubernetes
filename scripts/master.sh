@@ -448,8 +448,8 @@ spec:
     cpu: 100
     memory: 100Gi
   disruption:
-    consolidationPolicy: WhenEmptyOrUnderutilized
-    consolidateAfter: 5m
+    consolidationPolicy: WhenEmpty
+    consolidateAfter: Never
   weight: 10
 EOF
 
@@ -529,6 +529,75 @@ helm repo update
 # Install the mutating webhook
 helm install amazon-eks-pod-identity-webhook \
   jkroepke/amazon-eks-pod-identity-webhook \
-  --namespace irsa-demo \
+  --namespace eks-webhook --create-namespace \
   --set config.annotationPrefix=eks.amazonaws.com \
   --set config.defaultAwsRegion=eu-central-1
+
+# Add headlamp repository
+helm repo add headlamp https://kubernetes-sigs.github.io/headlamp/
+helm repo update
+
+# Install headlamp chart
+helm install headlamp headlamp/headlamp \
+  --namespace headlamp --create-namespace
+
+# Create headlamp directory
+mkdir -p /home/ubuntu/headlamp
+
+# Create headlamp ingress
+cat <<EOF > /home/ubuntu/headlamp/headlamp-ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: headlamp
+  namespace: headlamp
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: headlamp.shadoshops.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: headlamp
+                port:
+                  number: 80
+EOF
+
+kubectl apply -f /home/ubuntu/headlamp/headlamp-ingress.yaml
+
+# Create headlamp service account
+cat <<EOF > /home/ubuntu/headlamp/headlamp-sa.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: headlamp-admin
+  namespace: headlamp
+EOF
+
+kubectl apply -f /home/ubuntu/headlamp/headlamp-sa.yaml
+
+# Create headlamp role
+cat <<EOF > /home/ubuntu/headlamp/headlamp-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: headlamp-admin
+subjects:
+- kind: ServiceAccount
+  name: headlamp-admin
+  namespace: headlamp
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+EOF
+
+kubectl apply -f /home/ubuntu/headlamp/headlamp-role.yaml
+
+# Create headlamp token and save it to a file
+kubectl create token headlamp-admin \
+  -n headlamp \
+  --duration=720h > /home/ubuntu/headlamp/headlamp-token.txt

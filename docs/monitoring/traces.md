@@ -3,8 +3,8 @@
 helm repo add grafana https://grafana.github.io/helm-charts
 helm repo update
 
+helm install fluent-bit grafana/fluent-bit -n monitoring --create-namespace
 helm install loki grafana/loki -n monitoring --create-namespace
-helm install fluent-bit grafana/fluent-bit -n monitoring
 helm install grafana grafana/grafana -n monitoring
 
 # Fluent Bit installation

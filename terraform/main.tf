@@ -102,14 +102,24 @@ resource "aws_security_group_rule" "egress" {
 
 resource "aws_instance" "control_plane" {
   ami                         = data.aws_ami.ubuntu_ami.id
-  instance_type               = "t3.small"
+  instance_type               = "c7i-flex.large"
+  # instance_type               = "t3.small"
   key_name                    = data.aws_key_pair.key_pair.key_name
   iam_instance_profile        = aws_iam_instance_profile.control_plane_profile.name
   vpc_security_group_ids      = [aws_security_group.k8s.id]
   subnet_id                   = aws_subnet.kubernetes_cluster.id
   associate_public_ip_address = true
 
-  user_data = file("../scripts/master.sh")
+  user_data_base64 = base64gzip(file("../scripts/master.sh"))
+
+  root_block_device {
+    volume_size           = 25      # Size in GiB
+    volume_type           = "gp3"   # gp3, gp2, io1, io2, etc.
+    # iops        = 3000
+    # throughput  = 125  # For gp3 (e.g. 125, 250, 500)
+    # encrypted             = true
+    delete_on_termination = true
+  }
 
   tags = {
     Name                               = "k8s-control-plane"
@@ -415,16 +425,16 @@ output "bucket_name" {
 #   url = "https://oidc.shadoshops.com"
 # }
 
-resource "aws_iam_openid_connect_provider" "kubernetes" {
-  url = "https://oidc.shadoshops.com"
+# resource "aws_iam_openid_connect_provider" "kubernetes" {
+#   url = "https://oidc.shadoshops.com"
 
-  client_id_list = [
-    "sts.amazonaws.com"
-  ]
+#   client_id_list = [
+#     "sts.amazonaws.com"
+#   ]
 
-  thumbprint_list = []
-  # thumbprint_list = [data.tls_certificate.kubernetes.certificates[0].sha1_fingerprint]
-}
+#   thumbprint_list = []
+#   # thumbprint_list = [data.tls_certificate.kubernetes.certificates[0].sha1_fingerprint]
+# }
 
 
 resource "aws_iam_policy" "s3_readonly" {
@@ -444,33 +454,33 @@ resource "aws_iam_policy" "s3_readonly" {
   })
 }
 
-resource "aws_iam_role" "irsa_demo" {
-  name = "irsa-demo-role"
+# resource "aws_iam_role" "irsa_demo" {
+#   name = "irsa-demo-role"
 
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
+#   assume_role_policy = jsonencode({
+#     Version = "2012-10-17"
+#     Statement = [
+#       {
+#         Effect = "Allow"
 
-        Principal = {
-          Federated = aws_iam_openid_connect_provider.kubernetes.arn
-        }
+#         Principal = {
+#           # Federated = aws_iam_openid_connect_provider.kubernetes.arn
+#         }
 
-        Action = "sts:AssumeRoleWithWebIdentity"
+#         Action = "sts:AssumeRoleWithWebIdentity"
 
-        Condition = {
-          StringEquals = {
-            "oidc.shadoshops.com:aud" = "sts.amazonaws.com"
-            "oidc.shadoshops.com:sub" = "system:serviceaccount:irsa-demo:s3-reader"
-          }
-        }
-      }
-    ]
-  })
-}
+#         Condition = {
+#           StringEquals = {
+#             "oidc.shadoshops.com:aud" = "sts.amazonaws.com"
+#             "oidc.shadoshops.com:sub" = "system:serviceaccount:irsa-demo:s3-reader"
+#           }
+#         }
+#       }
+#     ]
+#   })
+# }
 
-resource "aws_iam_role_policy_attachment" "irsa_demo" {
-  role       = aws_iam_role.irsa_demo.name
-  policy_arn = aws_iam_policy.s3_readonly.arn
-}
+# resource "aws_iam_role_policy_attachment" "irsa_demo" {
+#   role       = aws_iam_role.irsa_demo.name
+#   policy_arn = aws_iam_policy.s3_readonly.arn
+# }
