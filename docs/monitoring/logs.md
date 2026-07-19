@@ -1,16 +1,506 @@
+# Cluster level logging setup
+
+#### We are going to use two tools: Loki and fluent-bit.
+
+## Loki
+### Loki's architecture
+
+```
+
+                    Write Path
++------------+
+| Fluent Bit |
++------------+
+      |
+      v
++----------------+
+|  Distributor   |
++----------------+
+      |
+      | hashes labels
+      |
+      +-------------------+
+      |                   |
+      v                   v
++-----------+      +-----------+
+| Ingester1 |      | Ingester2 |
++-----------+      +-----------+
+      |                   |
+      | chunks            |
+      +---------+---------+
+                |
+                v
+         Object Storage
+         (S3, GCS, Azure)
+
+               ^
+               |
+        Index Metadata
+      (TSDB / BoltDB shipper)
+
+=====================================
+
+                 Read Path
+
+        +-------------------+
+        | Query Frontend    |
+        +-------------------+
+                  |
+                  v
+            +-----------+
+            | Querier   |
+            +-----------+
+            |           |
+      reads ingesters   |
+      reads S3          |
+            |           |
+            +-----------+
+                  |
+                Result
+
+=====================================
+
+Background
+
+Compactor
+    |
+    +--> merges indexes
+    +--> deletes expired logs
+
+```
+
+#### 1, Distributer
+It is stateless, stores nothing, only routes logs.
+- validates data 
+- compute stream identity
+- consistent hashing
+- replication
+- wait for quorum
+
+#### 2, Ingester
+Each ingester has memory, chunks, ISDB, WAL.
+
+log arrives -> check the label -> if stream exists, forward to it -> if not, create stream and forward
+
+Each stream has an active chunk.
+we write to chunks instead of writing to s3 directly
+
+after chunk compress then upload to s3
+there is a chunk size limit
+
+factors for chunk closing are 
+1,size
+2, time
+3, idle time
+
+Every log write will not only stay in memory chunk but also in disk with WAL
+
+chunks are immutable never modified again.
+
+#### 3, Compactor
+- Merge indexes
+Merging of the index metadata into one file per stream
+- Retention
+- Cleanup
+
+
+#### 4, Query Frontend
+
+It just accepts request from grafana, it does not search logs by it self
+
+- Queue queries
+- split large queries
+- cache
+
+#### 5, Querier
+The engine that actually read logs 
+
+read query -> find matching index -> where are chunks(are they in the ingester or in s3) -> asks from both -> download chunks -> decompress -> scan logs -> apply logQL filters -> merge results from ingester and s3 -> sort by timestamp -> return results
+
+
+```
+Grafana
+
+↓
+
+Query Frontend
+
+↓
+
+Split into 24 hourly queries
+
+↓
+
+Querier workers
+
+↓
+
+Index lookup
+
+↓
+
+Read active chunks from ingesters
+
++
+
+Read historical chunks from S3
+
+↓
+
+Decompress
+
+↓
+
+Execute LogQL
+
+↓
+
+Merge results
+
+↓
+
+Frontend cache
+
+↓
+
+Grafana
+
+```
+
+```
+
+                  WRITE PATH
+──────────────────────────────────────────────
+
+Fluent Bit
+     │
+     ▼
+ Distributor
+     │
+     ├── Validate request
+     ├── Hash labels into a stream
+     ├── Replicate to N ingesters
+     └── Wait for quorum
+             │
+             ▼
+        Ingesters
+             │
+             ├── Keep active chunks in memory
+             ├── Append new log entries
+             ├── Persist writes to the WAL
+             ├── Build index metadata
+             └── Flush compressed chunks
+                     │
+                     ▼
+               Object Storage (S3)
+
+          ▲
+          │
+     Compactor
+          ├── Merge index files
+          ├── Enforce retention
+          └── Delete obsolete chunks
+
+──────────────────────────────────────────────
+
+                   READ PATH
+
+Grafana
+    │
+    ▼
+Query Frontend
+    ├── Queue requests
+    ├── Split long time ranges
+    ├── Cache results
+    ▼
+Queriers
+    ├── Read active chunks from ingesters
+    ├── Read historical chunks from S3
+    ├── Use indexes to locate chunks
+    ├── Decompress chunks
+    ├── Execute LogQL
+    └── Merge and return results
+
+
+```    
+A distributed database is a database whose data is stored across multiple servers (nodes) that work together as if they were a single database.
+
+Loki is a distributed log aggregation system that collects and stores logs from various sources.
+
+| Component               | Primary responsibility                                                                  |
+| ----------------------- | --------------------------------------------------------------------------------------- |
+| **Distributor**         | Validate, hash streams, replicate, and route writes                                     |
+| **Ingester**            | Buffer logs in memory, write to WAL, create chunks, flush to object storage             |
+| **Object Storage (S3)** | Durable, long-term storage for immutable compressed chunks                              |
+| **Compactor**           | Optimize index files and enforce retention policies                                     |
+| **Query Frontend**      | Queue, split, cache, and distribute query work                                          |
+| **Querier**             | Read indexes and chunks, execute LogQL, merge results from ingesters and object storage |
+
+#### 6, Ruler
+The Ruler is an automatic scheduler that repeatedly runs LogQL queries and can trigger alerts based on the results.
+
+### Components
+#### 1, The gateway component 
+It is an nginx reverse proxy that routes incoming requests to the appropriate backend.
+Fluent Bit sends logs here:
+
+http://loki-gateway/loki/api/v1/push
+
+Grafana queries here:
+
+http://loki-gateway
+
+#### 2, Loki canary
+continuously test the gateway and ingester components to ensure they are working as expected.
+
+#### 3, Loki-result-cache
+caches the results of LogQL queries to avoid redundant computation.
+
+#### 4, loki-chunks-cache
+caches the chunks of log data to avoid redundant storage and retrieval.
+
+
+```bash
+kubectl get pvc -n monitoring
+kubectl describe pvc loki-chunks-cache-0 -n monitoring
+
+# or
+
+kubectl describe pod loki-chunks-cache-0 -n monitoring
+```
+
+To desable the loki canary 
+
+```yaml
+lokiCanary:
+  enabled: false
+```
+or
+```bash
+--set lokiCanary.enabled=false
+```
+
+```
+               Fluent Bit
+                    │
+                    ▼
+            +----------------+
+            |  loki-gateway  |
+            +----------------+
+                    │
+                    ▼
+            +----------------+
+            |    loki-0      |
+            |----------------|
+            | Distributor    |
+            | Ingester       |
+            | Querier        |
+            | Frontend       |
+            | Compactor      |
+            +----------------+
+              │          │
+              │          │
+              ▼          ▼
+          EBS (WAL)      S3
+                          │
+              +-------------------+
+              | chunks + indexes  |
+              +-------------------+
+
+      +------------------+
+      | chunks-cache     |
+      +------------------+
+
+      +------------------+
+      | results-cache    |
+      +------------------+
+
+      +------------------+
+      | loki-canary      |
+      +------------------+
+```
+grafana/lgtm-distributed    
+for loki, grafana, tempo and mimir
+grafana/loki           
+the standard loki deployment
+grafana/loki-canary         
+grafana/loki-distributed   
+grafana/loki-simple-scalable
++-------------+
+| Write Pods  |
+|-------------|
+|Distributor  |
+|Ingester     |
++-------------+
+
++-------------+
+| Read Pods   |
+|-------------|
+|Frontend     |
+|Querier      |
++-------------+
+
++-------------+
+| Backend     |
+|-------------|
+|Compactor    |
+|Gateway      |
+|Ruler        |
++-------------+
+grafana/loki-stack          
+``` bash
+# Add the Grafana Helm repository
+helm repo add grafana https://grafana.github.io/helm-charts
+helm repo update
+
+# Install loki
+helm install loki grafana/loki \
+  -n monitoring \
+  --create-namespace \
+  --set deploymentMode=SingleBinary \
+  --set singleBinary.replicas=2 \
+  --set write.replicas=0 \
+  --set read.replicas=0 \
+  --set backend.replicas=0 \
+  --set loki.auth_enabled=false \
+  --set gateway.enabled=true \
+  --set singleBinary.persistence.enabled=true \
+  --set singleBinary.persistence.storageClass=ebs-gp3-sc \
+  --set singleBinary.persistence.size=10Gi \
+  --set loki.storage.type=s3 \
+  --set loki.storage.bucketNames.chunks=loki-kubernetes-cluster-logs \
+  --set loki.storage.bucketNames.ruler=loki-kubernetes-cluster-logs \
+  --set loki.storage.bucketNames.admin=loki-kubernetes-cluster-logs \
+  --set loki.storage.s3.region=eu-central-1 \
+  --set loki.useTestSchema=true \
+  --set chunksCache.enabled=false \
+  --set resultsCache.enabled=false \
+  --set test.enabled=false \
+  --set lokiCanary.enabled=false
+
+# --set loki.schemaConfig.configs[0].from=2026-07-19 \
+# --set loki.schemaConfig.configs[0].store=tsdb \
+# --set loki.schemaConfig.configs[0].object_store=s3 \
+# --set loki.schemaConfig.configs[0].schema=v13 \
+# --set loki.schemaConfig.configs[0].index.prefix=loki_index_ \
+# --set loki.schemaConfig.configs[0].index.period=24h
+
+
+# --set chunksCache.allocatedMemory=256 \
+# --set chunksCache.allocatedCPU=100m
+
+# --set chunksCache.resources.requests.memory=256Mi \
+# --set chunksCache.resources.requests.cpu=100m \
+# --set chunksCache.resources.limits.memory=512Mi \
+# --set chunksCache.resources.limits.cpu=500m
+
+# --set lokiCanary.enabled=false
+
+
+# Upgrade loki
+helm upgrade loki grafana/loki \
+  -n monitoring \
+  --reuse-values \
+  --set deploymentMode=SingleBinary \
+  --set singleBinary.replicas=2 \
+  --set write.replicas=0 \
+  --set read.replicas=0 \
+  --set backend.replicas=0 \
+  --set loki.auth_enabled=false \
+  --set gateway.enabled=true \
+  --set singleBinary.persistence.enabled=true \
+  --set singleBinary.persistence.storageClass=ebs-gp3-sc \
+  --set singleBinary.persistence.size=10Gi \
+  --set loki.storage.type=s3 \
+  --set loki.storage.bucketNames.chunks=loki-storage \
+  --set loki.storage.bucketNames.ruler=loki-storage \
+  --set loki.storage.bucketNames.admin=loki-storage \
+  --set loki.storage.s3.region=eu-central-1 \
+  --set loki.useTestSchema=true \
+  --set chunksCache.enabled=false \
+  --set resultsCache.enabled=false \
+  --set test.enabled=false \
+  --set lokiCanary.enabled=false
+  
+
+
+# first desbale helm test 
+# --set test.enabled=false \
+# helm test loki -n monitoring
+
+```
+
+
+Questions:
+1, what are schema configurations
+2, how does indexing works in loki is not that hard to index things in s3
+
+
+for fluent-bit
+
+```conf
+Host  loki-gateway.monitoring.svc.cluster.local
+Port  80
+URI   /loki/api/v1/push
+```
+1. Manually (good for learning)
+
+Open Grafana
+
+Connections
+    ↓
+Data Sources
+    ↓
+Add Loki
+
+URL
+
+http://loki-gateway.monitoring.svc.cluster.local
+
+Save & Test.
+
+2. Provision it automatically (recommended)
+
+Since you're already using kube-prometheus-stack, Grafana supports provisioning data sources from a Helm value.
+
+In the kube-prometheus-stack values file:
+
+grafana:
+  additionalDataSources:
+    - name: Loki
+      type: loki
+      access: proxy
+      url: http://loki-gateway.monitoring.svc.cluster.local
+      isDefault: false
+
+Then
+
+helm upgrade kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+  -n monitoring \
+  -f values.yaml
+
+Grafana automatically creates the data source.
+
+3. Via Grafana API
+
+Grafana also has an HTTP API to create data sources, but Helm provisioning is almost always preferred in Kubernetes.
+
 ```bash
 # Add Fluent Helm repo and install Fluent Bit
 helm repo add fluent https://fluent.github.io/helm-charts
 helm repo update
 
-helm search repo fluent
-```
+# Search for Fluent Helm charts
+helm search repo fluent/
 
-### 1, fluent/fluent-bit   
+# 1, fluent/fluent-bit  
+# 2, fluent/fluent-operator  
+# 3, fluent/fluent-operator-fluent-bit-crds	
+# 4, fluent/fluent-bit-aggregator 
+# 5, fluent/fluent-bit-collector 
 
-The Helm chart for Fluent Bit running as a standalone agent.
+mkdir -p /home/ubuntu/fluent-bit
 
-```bash
 cat <<EOF > /home/ubuntu/fluent-bit/fluent-bit-config.yaml
 config:
   service: |
@@ -28,7 +518,7 @@ config:
   inputs: |
     [INPUT]
         Name tail
-        Path /var/log/containers/*.log
+        Path /var/log/containers/*nginx-logs*.log
         multiline.parser docker, cri
         Tag kube.*
         Mem_Buf_Limit 5MB
@@ -51,8 +541,12 @@ config:
 
   outputs: |
     [OUTPUT]
-        Name stdout
-        Match *
+        Name        loki
+        Match       *
+        Host        loki-gateway.monitoring.svc.cluster.local
+        Port        80
+        Labels job=fluent-bit,namespace=$kubernetes['namespace_name'],pod=$kubernetes['pod_name'],container=$kubernetes['container_name']
+        Line_Format json
 
   customParsers: |
     [PARSER]
@@ -91,10 +585,58 @@ helm upgrade fluent-bit fluent/fluent-bit \
 
 
 # we will also set This
---set serviceMonitor.enabled=true
+# --set serviceMonitor.enabled=true
 
 
+cat <<EOF > /home/ubuntu/fluent-bit/nginx-logs.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-logs
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx-logs
+  template:
+    metadata:
+      labels:
+        app: nginx-logs
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:latest
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+EOF
+
+kubectl apply -f /home/ubuntu/fluent-bit/nginx-logs.yaml
+
+
+kubectl port-forward deploy/nginx-logs 8080:80
+
+# In another terminal:
+for i in {1..20}; do
+  curl http://localhost:8080
+done
+
+# Or continuously:
+while true; do
+  curl -s http://localhost:8080 > /dev/null
+  sleep 1
+done
+
+# Then watch Fluent Bit's output:
+kubectl logs -n monitoring -l app.kubernetes.io/name=fluent-bit -f
 ```
+
 
 #### SERVICE
 This configures the fluent-bit process.
@@ -930,10 +1472,7 @@ hotReload:
 ```
 
 
-### 2, fluent/fluent-operator  
-### 3, fluent/fluent-operator-fluent-bit-crds	
-### 4, fluent/fluent-bit-aggregator 
-### 5, fluent/fluent-bit-collector
+
 
 
 ### Exercise
@@ -941,3 +1480,11 @@ hotReload:
 1, deploy an nginx deployment
 2, make the input specified for that container only
 3, see the logs properly
+
+
+#### Cleaup
+
+```bash
+helm uninstall fluent-bit -n monitoring
+helm uninstall loki -n monitoring
+```

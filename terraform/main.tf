@@ -102,7 +102,8 @@ resource "aws_security_group_rule" "egress" {
 
 resource "aws_instance" "control_plane" {
   ami                         = data.aws_ami.ubuntu_ami.id
-  instance_type               = "c7i-flex.large"
+  instance_type               = "m7i-flex.large"
+  # instance_type               = "c7i-flex.large"
   # instance_type               = "t3.small"
   key_name                    = data.aws_key_pair.key_pair.key_name
   iam_instance_profile        = aws_iam_instance_profile.control_plane_profile.name
